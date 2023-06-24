@@ -6,7 +6,6 @@ from typing import Callable, List, Optional, Tuple, Any
 
 from circuitsvis.attention import attention_pattern
 from jaxtyping import Float
-from IPython.display import display
 import plotly.graph_objects as go
 import torch
 from torch import Tensor
@@ -64,8 +63,6 @@ def connectom(
             c = metric(original_predictions, logits)
             connections[target, source] = c
 
-    if show:
-        display(attention_pattern(tokens, connections))
     return connections
 
 
