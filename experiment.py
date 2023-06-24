@@ -1,112 +1,108 @@
 # %%
-from functools import partial
-from typing import Callable, Optional, Tuple
-# from cv2 import log
-from sklearn import base
+from typing import List
 
 import torch
 from transformer_lens import HookedTransformer
-from torch import Tensor
-from tqdm.auto import trange
-from circuitsvis.attention import attention_pattern
-from IPython.display import display
-import plotly.express as px
-from jaxtyping import Int, Float
+
+from utils import (
+    docstring_metric,
+    ioi_metric,
+    kl_on_last_token,
+    layer_level_connectom,
+    sankey_diagram_of_connectome,
+)
 
 # %%
 model = HookedTransformer.from_pretrained("gpt2-small")
 # %%
-prompts = []
-
-names = ["Mark", "Tom", "Diego", "Jane", "Matt", "Max"]
-
-for s1 in names:
-    for s2 in names:
-        for io in names:
-            prompts.append(
-                f"When {s1} and {io} went to the store, {s2} gave a drink to" 
-            )
-# %%
-with torch.inference_mode():
-    _, generic_cache = model.run_with_cache(prompts) 
-
-# %%
-def patch_in_avg(activation, hook, source: int, target: int) -> None:
-    activation[:, :, target, source] = generic_cache[hook.name][:, :, target, source].mean(0)
-
-# %%
-def block_attention(activation, hook, source: int, target: int) -> None:
-    activation[:, :, target, source] = float("-inf")
-
-def block_score(activation, hook, source: int, target: int) -> None:
-    activation[:, :, target, source] = 0
-
-@torch.inference_mode()
-def connectom(prompt: str, metric: Callable[[Float[Tensor, 'seq vocab'], Float[Tensor, 'seq vocab']], float]) -> None:
-    tokens = model.to_str_tokens(prompt)
-    n_tokens = len(tokens)
-
-    original_predictions = model(prompt)[0]
-
-    connections = torch.full((n_tokens, n_tokens), float("nan"))
-    for target in trange(1, n_tokens):
-        for source in range(1, target+1):
-            logits = model.run_with_hooks(
-                prompt,
-                fwd_hooks=[
-                    (
-                        lambda name: name.endswith("attn_scores"),
-                        partial(block_attention, source=source, target=target),
-                        # lambda name: name.endswith("pattern"),
-                        # partial(block_score, source=source, target=target),
-                        # partial(patch_in_avg, source=source, target=target),
-                    )
-                ],
-            )[0]
-            connections[target, source] = metric(original_predictions, logits)
-
-    display(attention_pattern(tokens, connections))
-    # return
-
-    tokens_labels = [f"{i}: {t}" for i, t in enumerate(tokens)]
-    px.imshow(connections,
-        x=tokens_labels,
-        y=tokens_labels,
-        labels=dict(x="Source", y="Target"),
-    ).show()
-
-# %% Metrics
-
-def kl_on_last_token(original_logits, patched_logits) -> float:
-    return torch.nn.functional.kl_div(
-        patched_logits[-1].log_softmax(-1),
-        original_logits[-1].log_softmax(-1),
-        log_target=True,
-        reduction="sum",
-    ).item()
-
-def ioi_metric(subject: str, indirect_object: str) -> float:
-    s = model.to_single_token(subject)
-    io = model.to_single_token(indirect_object)
-    def metric(original_logits: Float[Tensor, 'seq vocab'],
-               patched_logits: Float[Tensor, 'seq vocab'],
-              ) -> float:
-        baseline = original_logits[-1, io] - original_logits[-1, s]
-        logit_diff = patched_logits[-1, io] - patched_logits[-1, s]
-        return logit_diff - baseline
-    return metric
-
-# %%
-
-prompt = "When Diego and Felix went to ARENA, Felix gave two paperclips to"
 prompt = "When Mary and John went to the store, John gave a drink to"
 # %%
-connectom(prompt, ioi_metric(" John", " Mary"))
+s_token_id = model.to_single_token(" John")
+io_token_id = model.to_single_token(" Mary")
+results = layer_level_connectom(model,
+                                prompt,
+                                ioi_metric(s_token_id, io_token_id),
+                                threshold=0.75)
 # %%
-connectom(prompt, kl_on_last_token)
+results = layer_level_connectom(model,
+                                prompt,
+                                kl_on_last_token,
+                                threshold=0.05)
+# %%
+sankey_diagram_of_connectome(model, prompt, results)
+# %%
+docstring_prompt1 = '''def old(self, first, files, page, names, size, read):
+    """sector gap population
+
+    :param page: message tree
+    :param names: detail mine
+    :param'''
+
+correct_param1 = " size"
+incorrect_params1 = [" self", " first", " files", " page", " names", " read"]
+
+docstring_prompt2 = '''def port(self, load, size, file, last):
+    """oil column piece
+
+    :param load: crime population
+    :param size: unit dark
+    :param'''
+
+correct_param2 = " file"
+incorrect_params2 = [" self", " load", " size", " last"]
+# %%
+four_layer_attn_only = HookedTransformer.from_pretrained("attn-only-4l")
+
 
 # %%
-connectom(" ( ( ) ( ) ) ( ) ( ( ( ) ( ) ) )")
+def get_model_completions(prompt):
+    logits = four_layer_attn_only(prompt)
+    _, indices = torch.topk(logits[0, -1], 10)
+    print(four_layer_attn_only.to_str_tokens(indices))
+
 
 # %%
+docstring_results = layer_level_connectom(model,
+                                          docstring_prompt1,
+                                          kl_on_last_token,
+                                          threshold=0.2)
 
+
+# %%
+def map_connectome_for_docstring_task(
+    model: HookedTransformer,
+    prompt: str,
+    correct_param: str,
+    incorrect_param: List[str],
+    threshold=1.0,
+):
+    correct_param_id = int(model.to_single_token(correct_param))
+    incorrect_param_ids = [
+        int(model.to_single_token(token)) for token in incorrect_param
+    ]
+    docstring_results = layer_level_connectom(
+        model,
+        prompt,
+        docstring_metric(correct_param_id, incorrect_param_ids),
+        threshold=threshold,
+    )
+    sankey_diagram_of_connectome(model, prompt, docstring_results)
+
+
+# %%
+map_connectome_for_docstring_task(
+    model,
+    docstring_prompt1,
+    correct_param1,
+    incorrect_params1,
+)
+# %%
+map_connectome_for_docstring_task(
+    four_layer_attn_only,
+    docstring_prompt2,
+    correct_param2,
+    incorrect_params2,
+    threshold=1.5,
+)
+
+# %%
