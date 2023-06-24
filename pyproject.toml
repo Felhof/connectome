@@ -1,4 +1,4 @@
-[greentool.poetry]
+[tool.poetry]
 name = "connectome"
 version = "0.1.0"
 description = ""
