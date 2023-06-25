@@ -215,7 +215,7 @@ def plot_graphviz_connectome(
                        str(connexion.target_int),
                        label=f"{connexion.strength:.2f}",
                        color="#87D37C" if connexion.strength < 0 else "#E52B50",
-                       penwidth=str(int(map_range(abs(connexion.strength), min_strength, max_strength, 0, 7))))
+                       penwidth=str(int(map_range(abs(connexion.strength), min_strength, max_strength, 1, 7))))
 
 
     return graph
@@ -229,7 +229,6 @@ def plot_attn_connectome(model: HookedTransformer, prompt: str, connectome: List
         connexions[connexion.target, connexion.source] = connexion.strength
 
     triu = torch.triu(torch.ones(n_tokens, n_tokens, dtype=torch.bool), diagonal=1)
-    print(triu)
     connexions.masked_fill_(triu, float("nan"))
 
     labels = [f"{i}: {token!r}" for i, token in enumerate(tokens)]

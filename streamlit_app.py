@@ -1,3 +1,5 @@
+from functools import partial
+
 import streamlit as st
 from transformer_lens import HookedTransformer
 
@@ -5,6 +7,11 @@ import diego as d
 
 st.title("Connectome Visualizer")
 
+st.markdown('''
+- **Intervention**: Setting the attention pattern to zero between a pair of tokens, for every layer and head.
+- **Metric**: Logit difference between the correct token and the incorrect token, to which we remove the baseline from the original prompt.
+- **Strategy**: Explore all pairs of tokens.
+''')
 
 @st.cache_resource
 def load_model(name: str):
@@ -58,16 +65,11 @@ with tab_graphviz:
     with col2:
         st.download_button("Download SVG", graph.pipe(format="svg"), "connectome.svg", "text/svg")
         st.download_button("Download PNG", graph.pipe(format="png"), "connectome.png", "image/png")
+
     st.graphviz_chart(graph)
 
 with tab_attention:
     st.plotly_chart(d.plot_attn_connectome(model, prompt, connectome))
 
-
-st.markdown('''
-- **Intervention**: Setting the attention score to zero at every layer between pairs of tokens.
-- **Metric**: Logit difference between the correct token and the incorrect token, to which we remove the baseline from the original prompt.
-- **Strategy**: Explore all pairs of tokens.
-''')
 
 st.write(model.to_str_tokens(prompt))
