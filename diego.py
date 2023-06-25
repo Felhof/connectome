@@ -19,7 +19,8 @@ from utils import Connexion
 
 # Types
 
-Metric = Callable[[Float[Tensor, "seq vocab"], Float[Tensor, "seq vocab"]], float]
+Metric = Callable[[Float[Tensor, "seq vocab"], Float[Tensor, "seq vocab"]],
+                  float]
 """A metric is a function that take the original logits on a prompt and the patched logits 
 after an intervention and returns a number."""
 
@@ -30,8 +31,8 @@ that:
 - receives a strength of the connexion between the source and target (according to the metric)
 """
 
-
 # Interventions
+
 
 class Intervention(abc.ABC):
     """An intervention is a collection of hooks that modify the behavior of a model."""
@@ -44,41 +45,62 @@ class Intervention(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def hook(self, activation: Float[Tensor, "batch *activation"], hook: HookPoint,
-             source: Union[int, slice], target: Union[int, slice]):
+    def hook(
+        self,
+        activation: Float[Tensor, "batch *activation"],
+        hook: HookPoint,
+        source: Union[int, slice],
+        target: Union[int, slice],
+    ):
         """Modify the activation in-place."""
         raise NotImplementedError
 
     @contextmanager
-    def hooks(self, model: HookedTransformer, source: Union[int, slice], target: Union[int, slice]):
+    def hooks(
+        self,
+        model: HookedTransformer,
+        source: Union[int, slice],
+        target: Union[int, slice],
+    ):
         assert isinstance(source, (int, slice))
         assert isinstance(target, (int, slice))
 
-        with model.hooks(fwd_hooks=[
-            (self.filter, partial(self.hook, source=source, target=target))
-        ]):
+        with model.hooks(fwd_hooks=[(
+                self.filter,
+                partial(self.hook, source=source, target=target))]):
             yield
 
 
 class ZeroPattern(Intervention):
+
     def filter(self, name: str):
         return name.endswith("pattern")
 
-    def hook(self, activation: Float[Tensor, "batch head seq_query seq_key"], hook: HookPoint,
-             source: Union[int, slice], target: Union[int, slice]):
+    def hook(
+        self,
+        activation: Float[Tensor, "batch head seq_query seq_key"],
+        hook: HookPoint,
+        source: Union[int, slice],
+        target: Union[int, slice],
+    ):
         activation[:, :, target, source] = 0.0
 
 
 # Metrics
 
+
 def logit_diff_metric(model: HookedTransformer, correct: str, incorrect: str):
     correct_token = model.to_single_token(correct)
     incorrect_token = model.to_single_token(incorrect)
 
-    def metric(original_logits: Float[Tensor, "seq vocab"],
-               patched_logits: Float[Tensor, "seq vocab"]) -> float:
-        original_diff = original_logits[-1, correct_token] - original_logits[-1, incorrect_token]
-        patched_diff = patched_logits[-1, correct_token] - patched_logits[-1, incorrect_token]
+    def metric(
+        original_logits: Float[Tensor, "seq vocab"],
+        patched_logits: Float[Tensor, "seq vocab"],
+    ) -> float:
+        original_diff = (original_logits[-1, correct_token] -
+                         original_logits[-1, incorrect_token])
+        patched_diff = (patched_logits[-1, correct_token] -
+                        patched_logits[-1, incorrect_token])
         return (patched_diff - original_diff) / original_diff
 
     return metric
@@ -86,16 +108,17 @@ def logit_diff_metric(model: HookedTransformer, correct: str, incorrect: str):
 
 # Exploration strategies
 
-def explore_bisect(n_tokens: int, threshold: float) -> Generator[tuple[slice, slice], float, None]:
+
+def explore_bisect(
+        n_tokens: int,
+        threshold: float) -> Generator[tuple[slice, slice], float, None]:
     """Explore the connexion between all pairs of tokens in the prompt by cutting the interval in half
     at each step.
     Strength: can skip whole square of interventions
     Weakness: does not notice when two connexion compensate each other in the same square
     """
 
-    to_explore = {
-        ((0, n_tokens), (0, n_tokens))
-    }
+    to_explore = {((0, n_tokens), (0, n_tokens))}
     while to_explore:
         sources, targets = to_explore.pop()
         if targets[1] < sources[0]:
@@ -151,11 +174,11 @@ def explore_backtrack(n_tokens: int, threshold: float = 0.5):
 
 @torch.inference_mode()
 def connectom(
-        model: HookedTransformer,
-        prompt: str,
-        metric: Metric,
-        intervention: Intervention,
-        strategy: Strategy,
+    model: HookedTransformer,
+    prompt: str,
+    metric: Metric,
+    intervention: Intervention,
+    strategy: Strategy,
 ) -> list[Connexion]:
     tokens = model.to_str_tokens(prompt)
     n_tokens = len(tokens)
@@ -183,13 +206,15 @@ def connectom(
 
     return connections
 
+
 # Other visualization
 
+
 def plot_graphviz_connectome(
-        model: HookedTransformer,
-        prompt: str,
-        connectome: List[Connexion],
-        threshold: float = 0.0,
+    model: HookedTransformer,
+    prompt: str,
+    connectome: List[Connexion],
+    threshold: float = 0.0,
 ) -> graphviz.Digraph:
     tokens = model.to_str_tokens(prompt)
     graph = graphviz.Digraph()
@@ -199,8 +224,7 @@ def plot_graphviz_connectome(
         endpoint
         for connexion in connectome
         for endpoint in (connexion.source, connexion.target)
-        if abs(connexion.strength) >= threshold
-            and connexion.is_single_pair
+        if abs(connexion.strength) >= threshold and connexion.is_single_pair
     }
     for i, token in enumerate(tokens):
         if i in tokens_used:
@@ -211,16 +235,22 @@ def plot_graphviz_connectome(
     max_strength = max(abs(connexion.strength) for connexion in connectome)
     for connexion in connectome:
         if abs(connexion.strength) >= threshold and connexion.is_single_pair:
-            graph.edge(str(connexion.source_int),
-                       str(connexion.target_int),
-                       label=f"{connexion.strength:.2f}",
-                       color="#87D37C" if connexion.strength < 0 else "#E52B50",
-                       penwidth=str(int(map_range(abs(connexion.strength), min_strength, max_strength, 1, 7))))
-
+            graph.edge(
+                str(connexion.source_int),
+                str(connexion.target_int),
+                label=f"{connexion.strength:.2f}",
+                color="#87D37C" if connexion.strength < 0 else "#E52B50",
+                penwidth=str(
+                    int(
+                        map_range(abs(connexion.strength), min_strength,
+                                  max_strength, 1, 7))),
+            )
 
     return graph
 
-def plot_attn_connectome(model: HookedTransformer, prompt: str, connectome: List[Connexion]):
+
+def plot_attn_connectome(model: HookedTransformer, prompt: str,
+                         connectome: List[Connexion]):
     tokens = model.to_str_tokens(prompt)
     n_tokens = len(tokens)
     # Maybe we want to sort the connexions by size of patch?
@@ -228,18 +258,24 @@ def plot_attn_connectome(model: HookedTransformer, prompt: str, connectome: List
     for connexion in connectome:
         connexions[connexion.target, connexion.source] = connexion.strength
 
-    triu = torch.triu(torch.ones(n_tokens, n_tokens, dtype=torch.bool), diagonal=1)
+    triu = torch.triu(torch.ones(n_tokens, n_tokens, dtype=torch.bool),
+                      diagonal=1)
     connexions.masked_fill_(triu, float("nan"))
 
     labels = [f"{i}: {token!r}" for i, token in enumerate(tokens)]
-    return px.imshow(connexions, x=labels, y=labels,
-                     labels=dict(x="Source", y="Target", color="Strength"),
-                     color_continuous_scale="RdBu",
-                     color_continuous_midpoint=0,
-                     title="Attention connectome")
+    return px.imshow(
+        connexions,
+        x=labels,
+        y=labels,
+        labels=dict(x="Source", y="Target", color="Strength"),
+        color_continuous_scale="RdBu",
+        color_continuous_midpoint=0,
+        title="Attention connectome",
+    )
 
 
-def map_range(value: float, min_value: float, max_value: float, min_range: float, max_range: float) -> float:
+def map_range(value: float, min_value: float, max_value: float,
+              min_range: float, max_range: float) -> float:
     """Map a value from a range to another"""
     normalized = (value - min_value) / (max_value - min_value)
     return min_range + normalized * (max_range - min_range)

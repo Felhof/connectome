@@ -7,11 +7,11 @@ import diego as d
 
 st.title("Connectome Visualizer")
 
-st.markdown('''
+st.markdown("""
 - **Intervention**: Setting the attention pattern to zero between a pair of tokens, for every layer and head.
 - **Metric**: Proportion of logit difference impacted by the intervention.
 - **Strategy**: Explore all pairs of tokens.
-''')
+""")
 
 
 @st.cache_resource
@@ -22,7 +22,8 @@ def load_model(name: str):
 model_name = st.radio("Model", ["gpt2", "attn-only-4l"], horizontal=True)
 model = load_model(model_name)
 
-prompt = st.text_input("Prompt", "When Mary and John went to the store, John gave a drink to")
+prompt = st.text_input(
+    "Prompt", "When Mary and John went to the store, John gave a drink to")
 
 
 def select_token(label: str, default: str) -> str:
@@ -48,11 +49,13 @@ with col2:
 @st.cache_data
 def get_connectome(prompt, correct_token, incorrect_token, model_name):
     model = load_model(model_name)  # To invalidate cache if model changes
-    return d.connectom(model, prompt,
-                       d.logit_diff_metric(model, correct_token, incorrect_token),
-                       d.ZeroPattern(),
-                       strategy=d.explore_all_pairs,
-                       )
+    return d.connectom(
+        model,
+        prompt,
+        d.logit_diff_metric(model, correct_token, incorrect_token),
+        d.ZeroPattern(),
+        strategy=d.explore_all_pairs,
+    )
 
 
 connectome = get_connectome(prompt, correct_token, incorrect_token, model_name)
@@ -63,7 +66,10 @@ with tab_graphviz:
     # col1, col2 = st.columns([3, 1])
     # with col1:
     threshold = st.slider("Threshold", 0.1, 1.0, 0.2)
-    graph = d.plot_graphviz_connectome(model, prompt, connectome, threshold=threshold)
+    graph = d.plot_graphviz_connectome(model,
+                                       prompt,
+                                       connectome,
+                                       threshold=threshold)
     # with col2:
     #     st.download_button("Download SVG", graph.pipe(format="svg"), "connectome.svg", "text/svg")
     #     st.download_button("Download PNG", graph.pipe(format="png"), "connectome.png", "image/png")

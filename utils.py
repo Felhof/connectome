@@ -96,8 +96,10 @@ def layer_level_connectom(
     original_predictions = model(prompt)[0]
     str_tokens = model.to_str_tokens(prompt)
     connections = connectom(model, prompt, metric, show=False)
-    important_connections = (torch.abs(connections) > threshold).nonzero().tolist()
-    layer_powerset = list(powerset(range(model.cfg.n_layers), min_size=1, max_size=4))
+    important_connections = (torch.abs(connections)
+                             > threshold).nonzero().tolist()
+    layer_powerset = list(
+        powerset(range(model.cfg.n_layers), min_size=1, max_size=4))
 
     results = []
 
@@ -194,7 +196,6 @@ def docstring_metric(correct_param_id: int,
     return metric
 
 
-
 def coerce_int(value: Union[int, slice]) -> Optional[int]:
     if isinstance(value, int):
         return value
@@ -202,6 +203,7 @@ def coerce_int(value: Union[int, slice]) -> Optional[int]:
         return value.start
     else:
         return None
+
 
 @dataclass
 class Connexion:
@@ -212,7 +214,8 @@ class Connexion:
 
     @property
     def is_single_pair(self) -> bool:
-        return coerce_int(self.source) is not None and coerce_int(self.target) is not None
+        return (coerce_int(self.source) is not None
+                and coerce_int(self.target) is not None)
 
     @property
     def source_int(self) -> int:
@@ -227,6 +230,7 @@ class Connexion:
         if target is None:
             raise ValueError(f"Cannot get single int from {self.target}")
         return target
+
 
 def sankey_diagram_of_connectome(
     model: HookedTransformer,
@@ -246,7 +250,8 @@ def sankey_diagram_of_connectome(
     values = []
     link_labels = []
 
-    max_connection_strength = max(abs(connexion.strength) for connexion in connectome)
+    max_connection_strength = max(
+        abs(connexion.strength) for connexion in connectome)
 
     for connexion in connectome:
         if abs(connexion.strength) < threshold:
