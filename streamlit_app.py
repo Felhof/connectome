@@ -25,10 +25,11 @@ prompt = st.text_input("Prompt", "When Mary and John went to the store, John gav
 
 def select_token(label: str, default: str) -> str:
     token = st.text_input(label, default)
+    # Feedback
     try:
         token_id = model.to_single_token(token)
     except AssertionError:
-        st.write(f"Token not in vocabulary: `{token!r}`")
+        st.error(f"Token not in vocabulary: `{token!r}`")
         st.stop()
     else:
         st.write(f"Understood as: `{token!r}` ({token_id})")
@@ -39,8 +40,6 @@ with col1:
     correct_token = select_token("Correct Token", " Mary")
 with col2:
     incorrect_token = select_token("Incorrect Token", " John")
-
-# Feedback
 
 
 @st.cache_data
@@ -58,13 +57,13 @@ connectome = get_connectome(prompt, correct_token, incorrect_token, model_name)
 tab_graphviz, tab_attention = st.tabs(["Graphviz", "Attention"])
 
 with tab_graphviz:
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        threshold = st.slider("Threshold", 0.1, 1.0, 0.6)
+    # col1, col2 = st.columns([3, 1])
+    # with col1:
+    threshold = st.slider("Threshold", 0.1, 1.0, 0.6)
     graph = d.plot_graphviz_connectome(model, prompt, connectome, threshold=threshold)
-    with col2:
-        st.download_button("Download SVG", graph.pipe(format="svg"), "connectome.svg", "text/svg")
-        st.download_button("Download PNG", graph.pipe(format="png"), "connectome.png", "image/png")
+    # with col2:
+    #     st.download_button("Download SVG", graph.pipe(format="svg"), "connectome.svg", "text/svg")
+    #     st.download_button("Download PNG", graph.pipe(format="png"), "connectome.png", "image/png")
 
     st.graphviz_chart(graph)
 
