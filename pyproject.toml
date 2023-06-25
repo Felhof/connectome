@@ -16,6 +16,8 @@ transformer-lens = "^1.2.2"
 einops = "^0.6.1"
 graphviz = "^0.20.1"
 circuitsvis = "^1.40.0"
+jupyter = "^1.0.0"
+streamlit = "^1.23.1"
 
 
 [build-system]

@@ -173,6 +173,9 @@ def connectom(
             logits = model(prompt)[0]
         strength = metric(original_predictions, logits)
 
+        if isinstance(strength, torch.Tensor):
+            strength = strength.item()
+
         # We record only point-to-point connexions, for now
         if (s := coerce_int(source)) is not None and (t := coerce_int(target)) is not None:
             connections.append(Connexion(s, t, strength, "All layers"))
@@ -197,18 +200,34 @@ def plot_graphviz_connectome(
         threshold: float = 0.0,
 ) -> graphviz.Digraph:
     tokens = model.to_str_tokens(prompt)
-    token_labels = [f"{token.replace(' ', '␣')}[{i}]" for i, token in enumerate(tokens)]
-
-    max_strength = max(abs(connexion.strength) for connexion in connectome)
-
     graph = graphviz.Digraph()
+
+    # Add all the used nodes to the graph with their corresponding string
+    tokens_used = {
+        endpoint
+        for connexion in connectome
+        for endpoint in (connexion.source, connexion.target)
+        if abs(connexion.strength) >= threshold
+    }
+    for i, token in enumerate(tokens):
+        if i in tokens_used:
+            graph.node(str(i), label=f"{i}: {token!r}")
+
+    # Add all the important connexions to the graph
+    min_strength = min(abs(connexion.strength) for connexion in connectome)
+    max_strength = max(abs(connexion.strength) for connexion in connectome)
     for connexion in connectome:
-        if abs(connexion.strength) < threshold:
-            continue
-        graph.edge(token_labels[connexion.source],
-                   token_labels[connexion.target],
-                   label=f"{connexion.strength:.2f}",
-                   color="#87D37C" if connexion.strength < 0 else "#E52B50",
-                     penwidth=str(int(1 + 5 * abs(connexion.strength) / max_strength)))
+        if abs(connexion.strength) >= threshold:
+            graph.edge(str(connexion.source),
+                       str(connexion.target),
+                       label=f"{connexion.strength:.2f}",
+                       color="#87D37C" if connexion.strength < 0 else "#E52B50",
+                       penwidth=str(int(map_range(abs(connexion.strength), min_strength, max_strength, 0, 7))))
 
     return graph
+
+
+def map_range(value: float, min_value: float, max_value: float, min_range: float, max_range: float) -> float:
+    """Map a value from a range to another"""
+    normalized = (value - min_value) / (max_value - min_value)
+    return min_range + normalized * (max_range - min_range)
