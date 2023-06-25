@@ -35,7 +35,7 @@ def get_connectome(prompt, correct_token, incorrect_token):
 
 connectome = get_connectome(prompt, correct_token, incorrect_token)
 
-threshold = st.slider("Threshold", 0.0, 1.0, 0.6)
+threshold = st.slider("Threshold", 0.1, 1.0, 0.6)
 
 # st.plotly_chart(
 #     sankey_diagram_of_connectome(model, prompt, connectome, threshold=threshold, show=False)
