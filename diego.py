@@ -79,7 +79,7 @@ def logit_diff_metric(model: HookedTransformer, correct: str, incorrect: str):
                patched_logits: Float[Tensor, "seq vocab"]) -> float:
         original_diff = original_logits[-1, correct_token] - original_logits[-1, incorrect_token]
         patched_diff = patched_logits[-1, correct_token] - patched_logits[-1, incorrect_token]
-        return patched_diff - original_diff
+        return (patched_diff - original_diff) / original_diff
 
     return metric
 
