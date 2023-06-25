@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from functools import partial
 from typing import List, Callable, Union, Generator, Optional
 
+import circuitsvis.attention
+import plotly.express as px
 import graphviz
 import torch
 from jaxtyping import Float
@@ -177,19 +179,9 @@ def connectom(
             strength = strength.item()
 
         # We record only point-to-point connexions, for now
-        if (s := coerce_int(source)) is not None and (t := coerce_int(target)) is not None:
-            connections.append(Connexion(s, t, strength, "All layers"))
+        connections.append(Connexion(source, target, strength, "All layers"))
 
     return connections
-
-
-def coerce_int(value: Union[int, slice]) -> Optional[int]:
-    if isinstance(value, slice):
-        if value.stop == value.start + 1:
-            return value.start
-        return None
-    else:
-        return value
 
 # Other visualization
 
@@ -208,6 +200,7 @@ def plot_graphviz_connectome(
         for connexion in connectome
         for endpoint in (connexion.source, connexion.target)
         if abs(connexion.strength) >= threshold
+            and connexion.is_single_pair
     }
     for i, token in enumerate(tokens):
         if i in tokens_used:
@@ -217,14 +210,34 @@ def plot_graphviz_connectome(
     min_strength = min(abs(connexion.strength) for connexion in connectome)
     max_strength = max(abs(connexion.strength) for connexion in connectome)
     for connexion in connectome:
-        if abs(connexion.strength) >= threshold:
-            graph.edge(str(connexion.source),
-                       str(connexion.target),
+        if abs(connexion.strength) >= threshold and connexion.is_single_pair:
+            graph.edge(str(connexion.source_int),
+                       str(connexion.target_int),
                        label=f"{connexion.strength:.2f}",
                        color="#87D37C" if connexion.strength < 0 else "#E52B50",
                        penwidth=str(int(map_range(abs(connexion.strength), min_strength, max_strength, 0, 7))))
 
+
     return graph
+
+def plot_attn_connectome(model: HookedTransformer, prompt: str, connectome: List[Connexion]):
+    tokens = model.to_str_tokens(prompt)
+    n_tokens = len(tokens)
+    # Maybe we want to sort the connexions by size of patch?
+    connexions = torch.zeros((n_tokens, n_tokens))
+    for connexion in connectome:
+        connexions[connexion.target, connexion.source] = connexion.strength
+
+    triu = torch.triu(torch.ones(n_tokens, n_tokens, dtype=torch.bool), diagonal=1)
+    print(triu)
+    connexions.masked_fill_(triu, float("nan"))
+
+    labels = [f"{i}: {token!r}" for i, token in enumerate(tokens)]
+    return px.imshow(connexions, x=labels, y=labels,
+                     labels=dict(x="Source", y="Target", color="Strength"),
+                     color_continuous_scale="RdBu",
+                     color_continuous_midpoint=0,
+                     title="Attention connectome")
 
 
 def map_range(value: float, min_value: float, max_value: float, min_range: float, max_range: float) -> float:

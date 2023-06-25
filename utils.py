@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain, combinations
-from typing import Callable, List, Optional, Tuple, Any
+from typing import Callable, List, Optional, Tuple, Any, Union
 
 from circuitsvis.attention import attention_pattern
 from jaxtyping import Float
@@ -194,13 +194,39 @@ def docstring_metric(correct_param_id: int,
     return metric
 
 
-# %%
+
+def coerce_int(value: Union[int, slice]) -> Optional[int]:
+    if isinstance(value, int):
+        return value
+    elif value.stop == value.start + 1:
+        return value.start
+    else:
+        return None
+
 @dataclass
 class Connexion:
-    source: int
-    target: int
+    source: Union[int, slice]
+    target: Union[int, slice]
     strength: float
     note: Any
+
+    @property
+    def is_single_pair(self) -> bool:
+        return coerce_int(self.source) is not None and coerce_int(self.target) is not None
+
+    @property
+    def source_int(self) -> int:
+        source = coerce_int(self.source)
+        if source is None:
+            raise ValueError(f"Cannot get single int from {self.source}")
+        return source
+
+    @property
+    def target_int(self) -> int:
+        target = coerce_int(self.target)
+        if target is None:
+            raise ValueError(f"Cannot get single int from {self.target}")
+        return target
 
 def sankey_diagram_of_connectome(
     model: HookedTransformer,
