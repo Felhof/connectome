@@ -3,7 +3,7 @@ import itertools
 import math
 from contextlib import contextmanager
 from functools import partial
-from typing import List, Callable, Union, Generator, Optional
+from typing import List, Callable, Union, Generator, Optional, Iterable
 
 import circuitsvis.attention
 import plotly.express as px
@@ -20,16 +20,11 @@ from utils import Connexion
 # Types
 
 Metric = Callable[[Float[Tensor, "seq vocab"], Float[Tensor, "seq vocab"]],
-                  float]
+float]
 """A metric is a function that take the original logits on a prompt and the patched logits 
 after an intervention and returns a number."""
 
-Strategy = Callable[[int], Generator[tuple[slice, slice], float, None]]
-"""A strategy is a function that takes the number of tokens in the prompt and returns a generator
-that:
-- repeatedly yields a source and target slice to explore
-- receives a strength of the connexion between the source and target (according to the metric)
-"""
+
 
 # Interventions
 
@@ -46,21 +41,21 @@ class Intervention(abc.ABC):
 
     @abc.abstractmethod
     def hook(
-        self,
-        activation: Float[Tensor, "batch *activation"],
-        hook: HookPoint,
-        source: Union[int, slice],
-        target: Union[int, slice],
+            self,
+            activation: Float[Tensor, "batch *activation"],
+            hook: HookPoint,
+            source: Union[int, slice],
+            target: Union[int, slice],
     ):
         """Modify the activation in-place."""
         raise NotImplementedError
 
     @contextmanager
     def hooks(
-        self,
-        model: HookedTransformer,
-        source: Union[int, slice],
-        target: Union[int, slice],
+            self,
+            model: HookedTransformer,
+            source: Union[int, slice],
+            target: Union[int, slice],
     ):
         assert isinstance(source, (int, slice))
         assert isinstance(target, (int, slice))
@@ -77,11 +72,11 @@ class ZeroPattern(Intervention):
         return name.endswith("pattern")
 
     def hook(
-        self,
-        activation: Float[Tensor, "batch head seq_query seq_key"],
-        hook: HookPoint,
-        source: Union[int, slice],
-        target: Union[int, slice],
+            self,
+            activation: Float[Tensor, "batch head seq_query seq_key"],
+            hook: HookPoint,
+            source: Union[int, slice],
+            target: Union[int, slice],
     ):
         activation[:, :, target, source] = 0.0
 
@@ -94,8 +89,8 @@ def logit_diff_metric(model: HookedTransformer, correct: str, incorrect: str):
     incorrect_token = model.to_single_token(incorrect)
 
     def metric(
-        original_logits: Float[Tensor, "seq vocab"],
-        patched_logits: Float[Tensor, "seq vocab"],
+            original_logits: Float[Tensor, "seq vocab"],
+            patched_logits: Float[Tensor, "seq vocab"],
     ) -> float:
         original_diff = (original_logits[-1, correct_token] -
                          original_logits[-1, incorrect_token])
@@ -108,91 +103,129 @@ def logit_diff_metric(model: HookedTransformer, correct: str, incorrect: str):
 
 # Exploration strategies
 
+EndPoint = Union[int, slice, list[int]]
 
-def explore_bisect(
-        n_tokens: int,
-        threshold: float) -> Generator[tuple[slice, slice], float, None]:
-    """Explore the connexion between all pairs of tokens in the prompt by cutting the interval in half
-    at each step.
-    Strength: can skip whole square of interventions
-    Weakness: does not notice when two connexion compensate each other in the same square
+
+class Strategy:
+    """A strategy defines the which interventions to do, based on the results of previous interventions.
+    It populates the `to_explore` set with pairs of endpoints to explore, and the `report` method is called
+    when the results of an intervention are available.
     """
 
-    to_explore = {((0, n_tokens), (0, n_tokens))}
-    while to_explore:
-        sources, targets = to_explore.pop()
-        if targets[1] < sources[0]:
-            # This interval is has no attention anyway, so we can skip it
-            continue
+    def __init__(self):
+        self.to_explore: list[tuple[EndPoint, EndPoint]] = []
 
-        # Evaluate the connexion between the two intervals
-        strength = yield slice(*sources), slice(*targets)
+    def start(self, n_tokens: int):
+        raise NotImplementedError
 
-        if abs(strength) > threshold:
-            if sources[1] - sources[0] == 1:
-                # We have an interval of length 1, so we can't split it any further
-                assert targets[1] - targets[0] == 1
-            else:
-                # Split the intervals in half and add the 4 new intervals to the set
-                source_mid = math.ceil((sources[0] + sources[1]) / 2)
-                target_mid = math.ceil((targets[0] + targets[1]) / 2)
-                to_explore.update([
-                    ((sources[0], source_mid), (targets[0], target_mid)),
-                    ((sources[0], source_mid), (target_mid, targets[1])),
-                    ((source_mid, sources[1]), (targets[0], target_mid)),
-                    ((source_mid, sources[1]), (target_mid, targets[1])),
-                ])
+    def pop_explorations(self, max_explorations: Optional[int] = None) -> list[tuple[EndPoint, EndPoint]]:
+        if max_explorations is None:
+            max_explorations = len(self.to_explore)
+
+        new = self.to_explore[-max_explorations:]
+        del self.to_explore[-max_explorations:]
+        return new
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if len(self.to_explore) == 0:
+            raise StopIteration
+        return self.to_explore.pop()
+
+    def report_all(self, source: EndPoint, target: EndPoint, strength: float):
+        assert type(source) == type(target)
+        if isinstance(source, list):
+            for s, t in zip(source, target):
+                self.report(s, t, strength)
+
+    @abc.abstractmethod
+    def report(self, source: Union[int, slice], target: Union[int, slice], strength: float):
+        pass
 
 
-def explore_all_pairs(n_tokens: int):
-    """Default exploration strategy: explore all pairs of tokens in the prompt."""
-    for target in range(1, n_tokens):
-        for source in range(1, target + 1):
-            yield source, target
+class BasicStrategy(Strategy):
+    def start(self, n_tokens: int):
+        self.to_explore = [
+            (source, target)
+            for target in range(1, n_tokens)
+            for source in range(1, target + 1)
+        ]
+
+    def __len__(self):
+        return len(self.to_explore)
 
 
-def explore_backtrack(n_tokens: int, threshold: float = 0.5):
-    """Explore strong connexions starting from the last token and recursively find the important tokens.
-    Strength: can skip analysis of whole destination tokens
-    Weakness: works only with metrics that depend only on the last token and fails to discover
-        part of the useful graph that are connected through multiple weak connexions"""
-    useful = {n_tokens - 1}
-    seen = set()
-    while useful:
-        target = useful.pop()
-        if target in seen:
-            continue
-        seen.add(target)
+class BisectStrategy(Strategy):
+    def __init__(self, threshold: float):
+        super().__init__()
+        self.threshold = threshold
 
-        for source in range(1, target + 1):
-            strength = yield source, target
-            if abs(strength) > threshold and source not in seen:
-                useful.add(source)
+    def start(self, n_tokens: int):
+        all_tokens = slice(0, n_tokens)
+        self.to_explore = [(all_tokens, all_tokens)]
 
-    return None
+    def report(self, source: Union[int, slice], target: Union[int, slice], strength: float):
+        assert type(source) == type(target) == slice
+
+        # If the connexion is too weak, we can skip the whole square
+        if abs(strength) < self.threshold:
+            return
+
+        if source.stop - source.start == 1:
+            # We have an interval of length 1, so we can't split it any further
+            assert target.stop - target.start == 1
+        else:
+            # Split the intervals in half and add the 4 new intervals to the set
+            source_mid = math.ceil((source.start + source.stop) / 2)
+            target_mid = math.ceil((target.start + target.stop) / 2)
+            for start in [slice(source.start, source_mid), slice(source_mid, source.stop)]:
+                for stop in [slice(target.start, target_mid), slice(target_mid, target.stop)]:
+                    # If all sources are after all targets, we can skip the whole square
+                    if start.start < stop.stop:
+                        self.to_explore.append((start, stop))
+
+
+class BacktrackingStrategy(Strategy):
+    def __init__(self, threshold: float):
+        super().__init__()
+        self.threshold = threshold
+        self.seen = set()
+
+    def start(self, n_tokens: int):
+        self.seen = set()
+        self.to_explore = list(self.new_to_visit(n_tokens - 1))
+
+    def new_to_visit(self, target: int):
+        if target not in self.seen:
+            self.seen.add(target)
+            for source in range(1, target + 1):
+                yield (source, target)
+
+    def report(self, source: Union[int, slice], target: Union[int, slice], strength: float):
+        assert type(source) == type(target) == int
+        # If the connexion is too weak, don't explore it
+        if abs(strength) >= self.threshold:
+            self.to_explore.extend(self.new_to_visit(source))
 
 
 @torch.inference_mode()
 def connectom(
-    model: HookedTransformer,
-    prompt: str,
-    metric: Metric,
-    intervention: Intervention,
-    strategy: Strategy,
+        model: HookedTransformer,
+        prompt: str,
+        metric: Metric,
+        intervention: Intervention,
+        strategy: Strategy,
 ) -> list[Connexion]:
     tokens = model.to_str_tokens(prompt)
     n_tokens = len(tokens)
     original_predictions = model(prompt)[0]
 
     connections: List[Connexion] = []
-    explorer = strategy(n_tokens)
-    strength = None
-    for _ in tqdm(itertools.count()):
+    strategy.start(n_tokens)
+    for source, target in tqdm(strategy):
         # Get the next source and target to explore
-        try:
-            source, target = explorer.send(strength)
-        except StopIteration:
-            break
         # Evaluate it
         with intervention.hooks(model, source=source, target=target):
             logits = model(prompt)[0]
@@ -201,7 +234,7 @@ def connectom(
         if isinstance(strength, torch.Tensor):
             strength = strength.item()
 
-        # We record only point-to-point connexions, for now
+        strategy.report(source, target, strength)
         connections.append(Connexion(source, target, strength, "All layers"))
 
     return connections
@@ -211,10 +244,10 @@ def connectom(
 
 
 def plot_graphviz_connectome(
-    model: HookedTransformer,
-    prompt: str,
-    connectome: List[Connexion],
-    threshold: float = 0.0,
+        model: HookedTransformer,
+        prompt: str,
+        connectome: List[Connexion],
+        threshold: float = 0.0,
 ) -> graphviz.Digraph:
     tokens = model.to_str_tokens(prompt)
     graph = graphviz.Digraph()

@@ -54,7 +54,7 @@ def get_connectome(prompt, correct_token, incorrect_token, model_name):
         prompt,
         d.logit_diff_metric(model, correct_token, incorrect_token),
         d.ZeroPattern(),
-        strategy=d.explore_all_pairs,
+        d.BasicStrategy(),
     )
 
 
@@ -63,16 +63,11 @@ connectome = get_connectome(prompt, correct_token, incorrect_token, model_name)
 tab_graphviz, tab_attention = st.tabs(["Graphviz", "Attention"])
 
 with tab_graphviz:
-    # col1, col2 = st.columns([3, 1])
-    # with col1:
     threshold = st.slider("Threshold", 0.1, 1.0, 0.2)
     graph = d.plot_graphviz_connectome(model,
                                        prompt,
                                        connectome,
                                        threshold=threshold)
-    # with col2:
-    #     st.download_button("Download SVG", graph.pipe(format="svg"), "connectome.svg", "text/svg")
-    #     st.download_button("Download PNG", graph.pipe(format="png"), "connectome.png", "image/png")
 
     st.graphviz_chart(graph)
 
