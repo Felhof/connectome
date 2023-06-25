@@ -15,7 +15,7 @@ from tqdm.autonotebook import tqdm
 from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
 
-from utils import Connexion
+from utils import Connexion, coerce_int
 
 # Types
 
@@ -209,6 +209,35 @@ class BacktrackingStrategy(Strategy):
         if abs(strength) >= self.threshold:
             self.to_explore.extend(self.new_to_visit(source))
 
+class BacktrackBisectStrategy(Strategy):
+    """A strategy that explores targets only when they are directly connected to the last token
+    and bisects the sources to find possible earlier nodes."""
+    def __init__(self, threshold: float):
+        super().__init__()
+        self.threshold = threshold
+        self.seen = set()
+
+    def start(self, n_tokens: int):
+        self.seen.clear()
+        self.to_explore = [(slice(1, n_tokens), n_tokens-1)]
+
+    def report(self, source: Union[int, slice], target: Union[int, slice], strength: float):
+        assert isinstance(target, int)
+        assert isinstance(source, slice)
+
+        if abs(strength) < self.threshold:
+            return
+        if source.stop == source.start + 1:
+            # source.start is individually connected to target
+            # -> We explore the possible parents of source.start
+            if source.start not in self.seen:
+                self.seen.add(source.start)
+                self.to_explore.append((slice(1, source.start+1), source.start))
+        else:
+            mid = math.ceil((source.start + source.stop) / 2)
+            self.to_explore.append((slice(source.start, mid), target))
+            self.to_explore.append((slice(mid, source.stop), target))
+
 
 @torch.inference_mode()
 def connectom(
@@ -254,10 +283,10 @@ def plot_graphviz_connectome(
 
     # Add all the used nodes to the graph with their corresponding string
     tokens_used = {
-        endpoint
+        coerce_int(endpoint)
         for connexion in connectome
         for endpoint in (connexion.source, connexion.target)
-        if abs(connexion.strength) >= threshold and connexion.is_single_pair
+        if abs(connexion.strength) >= threshold and coerce_int(endpoint) is not None
     }
     for i, token in enumerate(tokens):
         if i in tokens_used:
