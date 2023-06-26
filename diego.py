@@ -14,6 +14,7 @@ from torch import Tensor
 from tqdm.autonotebook import tqdm
 from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
+from transformer_lens.utils import get_act_name
 
 from utils import Connexion, coerce_int
 
@@ -66,7 +67,10 @@ class Intervention(abc.ABC):
             yield
 
 
-class ZeroPattern(Intervention):
+class DampenIntervention(Intervention):
+
+    def __init__(self, dampening_factor: float):
+        self.dampening_factor = dampening_factor
 
     def filter(self, name: str):
         return name.endswith("pattern")
@@ -78,7 +82,77 @@ class ZeroPattern(Intervention):
             source: Union[int, slice],
             target: Union[int, slice],
     ):
-        activation[:, :, target, source] = 0.0
+        activation[:, :, target, source] *= self.dampening_factor
+
+class ZeroPattern(DampenIntervention):
+    def __init__(self):
+        super().__init__(0.0)
+
+class CorruptIntervention(Intervention):
+    def __init__(self, model: HookedTransformer, clean_input: str, corrupt_input: str):
+        assert len(model.to_tokens(clean_input)) == len(model.to_tokens(corrupt_input))
+
+        self.model = model
+        self.corrupt_input = corrupt_input
+        self.clean_input = clean_input
+
+        names_filter = lambda name: name.endswith("resid_pre") or name.endswith("v") or name.endswith("k")
+        self.corrupt_cache = model.run_with_cache(corrupt_input, names_filter=names_filter)[1]
+        self.clean_cache = model.run_with_cache(clean_input, names_filter=names_filter)[1]
+
+    def filter(self, name: str):
+        return name.endswith("z")
+
+    def hook(
+            self,
+            main_activation: Float[Tensor, "batch head seq_query seq_key"],  # TODO: wrong
+            hook: HookPoint,
+            source: Union[int, slice],
+            target: Union[int, slice],
+    ):
+        old_use_split_qkv_input = self.model.cfg.use_split_qkv_input
+        self.model.cfg.use_split_qkv_input = True
+        hook.remove_hooks()
+
+        # Step 1: compute the attention score between clean query and corrupted key
+        layer = hook.layer()
+        def corrupt_source(activation: Float[Tensor, "batch seq head d_head"], hook: HookPoint):
+            activation[:, source] = self.corrupt_cache[hook.name][:, source]
+
+        def store_score(activation: Float[Tensor, "batch head seq_query seq_key"], hook: HookPoint):
+            hook.ctx["score"] = activation[:, :, target, source]
+            raise RuntimeError("Stop the forward pass here")
+
+        with self.model.hooks(fwd_hooks=[
+            (get_act_name("k", layer), corrupt_source),
+            (get_act_name("attn_scores", layer), store_score),
+        ]):
+            clean_resid_pre = self.clean_cache[get_act_name('resid_pre', layer)]
+            try:
+                self.model.blocks[layer](clean_resid_pre)
+            except RuntimeError:
+                pass
+
+        # Step 2: compute the new z
+
+        def corrupt_score(activation: Float[Tensor, "batch head seq_query seq_key"], hook: HookPoint):
+            activation[:, :, target, source] = hook.ctx.pop("score")
+
+        def hook_z(activation: Float[Tensor, "batch seq head d_head"], hook: HookPoint):
+            main_activation[:, target] = activation[:, target]
+            raise RuntimeError("Stop the forward pass here")
+
+        with self.model.hooks(fwd_hooks=[
+            (get_act_name("v", layer), corrupt_source),
+            (get_act_name("attn_scores", layer), corrupt_score),
+            (get_act_name("z", layer), hook_z),
+        ]):
+            try:
+                self.model.blocks[layer](clean_resid_pre)
+            except RuntimeError:
+                pass
+
+        self.model.cfg.use_split_qkv_input = old_use_split_qkv_input
 
 
 # Metrics
@@ -140,7 +214,6 @@ class Strategy:
             for s, t in zip(source, target):
                 self.report(s, t, strength)
 
-    @abc.abstractmethod
     def report(self, source: Union[int, slice], target: Union[int, slice], strength: float):
         pass
 
