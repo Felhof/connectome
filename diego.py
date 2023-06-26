@@ -3,11 +3,10 @@ import itertools
 import math
 from contextlib import contextmanager
 from functools import partial
-from typing import List, Callable, Union, Generator, Optional, Iterable
+from typing import List, Callable, Union, Optional, Iterable
 
-import circuitsvis.attention
-import plotly.express as px
 import graphviz
+import plotly.express as px
 import torch
 from jaxtyping import Float
 from torch import Tensor
@@ -24,7 +23,6 @@ Metric = Callable[[Float[Tensor, "seq vocab"], Float[Tensor, "seq vocab"]],
 float]
 """A metric is a function that take the original logits on a prompt and the patched logits 
 after an intervention and returns a number."""
-
 
 
 # Interventions
@@ -66,6 +64,27 @@ class Intervention(abc.ABC):
                 partial(self.hook, source=source, target=target))]):
             yield
 
+    def batch_hook(self, activation: Float[Tensor, "batch *activation"], hook: HookPoint,
+                   sources: Iterable[Union[int, slice]], targets: Iterable[Union[int, slice]]):
+        for i, (source, target) in enumerate(zip(sources, targets)):
+            self.hook(activation[i:i + 1], hook, source, target)
+
+    @contextmanager
+    def batch_hooks(
+            self,
+            model: HookedTransformer,
+            sources: list[Union[int, slice]],
+            targets: list[Union[int, slice]],
+    ):
+        assert len(sources) == len(targets)
+        assert all(isinstance(source, (int, slice)) for source in sources)
+        assert all(isinstance(target, (int, slice)) for target in targets)
+
+        with model.hooks(fwd_hooks=[(
+                self.filter,
+                partial(self.batch_hook, sources=sources, targets=targets))]):
+            yield
+
 
 class DampenIntervention(Intervention):
 
@@ -84,9 +103,11 @@ class DampenIntervention(Intervention):
     ):
         activation[:, :, target, source] *= self.dampening_factor
 
+
 class ZeroPattern(DampenIntervention):
     def __init__(self):
         super().__init__(0.0)
+
 
 class CorruptIntervention(Intervention):
     def __init__(self, model: HookedTransformer, clean_input: str, corrupt_input: str):
@@ -96,16 +117,17 @@ class CorruptIntervention(Intervention):
         self.corrupt_input = corrupt_input
         self.clean_input = clean_input
 
-        names_filter = lambda name: name.endswith("resid_pre") or name.endswith("v") or name.endswith("k")
-        self.corrupt_cache = model.run_with_cache(corrupt_input, names_filter=names_filter)[1]
-        self.clean_cache = model.run_with_cache(clean_input, names_filter=names_filter)[1]
+        self.corrupt_cache = \
+        model.run_with_cache(corrupt_input, names_filter=lambda n: n.endswith('k') or n.endswith('v'),
+                             remove_batch_dim=True)[1]
+        self.clean_cache = model.run_with_cache(clean_input, names_filter=lambda n: n.endswith('resid_pre'))[1]
 
     def filter(self, name: str):
         return name.endswith("z")
 
     def hook(
             self,
-            main_activation: Float[Tensor, "batch head seq_query seq_key"],  # TODO: wrong
+            main_activation: Float[Tensor, "batch seq head d_head"],
             hook: HookPoint,
             source: Union[int, slice],
             target: Union[int, slice],
@@ -116,8 +138,9 @@ class CorruptIntervention(Intervention):
 
         # Step 1: compute the attention score between clean query and corrupted key
         layer = hook.layer()
+
         def corrupt_source(activation: Float[Tensor, "batch seq head d_head"], hook: HookPoint):
-            activation[:, source] = self.corrupt_cache[hook.name][:, source]
+            activation[:, source] = self.corrupt_cache[hook.name][source]
 
         def store_score(activation: Float[Tensor, "batch head seq_query seq_key"], hook: HookPoint):
             hook.ctx["score"] = activation[:, :, target, source]
@@ -282,9 +305,11 @@ class BacktrackingStrategy(Strategy):
         if abs(strength) >= self.threshold:
             self.to_explore.extend(self.new_to_visit(source))
 
+
 class BacktrackBisectStrategy(Strategy):
     """A strategy that explores targets only when they are directly connected to the last token
     and bisects the sources to find possible earlier nodes."""
+
     def __init__(self, threshold: float):
         super().__init__()
         self.threshold = threshold
@@ -292,7 +317,7 @@ class BacktrackBisectStrategy(Strategy):
 
     def start(self, n_tokens: int):
         self.seen.clear()
-        self.to_explore = [(slice(1, n_tokens), n_tokens-1)]
+        self.to_explore = [(slice(1, n_tokens), n_tokens - 1)]
 
     def report(self, source: Union[int, slice], target: Union[int, slice], strength: float):
         assert isinstance(target, int)
@@ -305,7 +330,7 @@ class BacktrackBisectStrategy(Strategy):
             # -> We explore the possible parents of source.start
             if source.start not in self.seen:
                 self.seen.add(source.start)
-                self.to_explore.append((slice(1, source.start+1), source.start))
+                self.to_explore.append((slice(1, source.start + 1), source.start))
         else:
             mid = math.ceil((source.start + source.stop) / 2)
             self.to_explore.append((slice(source.start, mid), target))
@@ -319,25 +344,35 @@ def connectom(
         metric: Metric,
         intervention: Intervention,
         strategy: Strategy,
+        max_batch_size: int = 10,
 ) -> list[Connexion]:
     tokens = model.to_str_tokens(prompt)
     n_tokens = len(tokens)
     original_predictions = model(prompt)[0]
 
     connections: List[Connexion] = []
+    progress = tqdm(itertools.count(), desc="Exploring", unit=" connexions")
     strategy.start(n_tokens)
-    for source, target in tqdm(strategy):
+    while True:
         # Get the next source and target to explore
+        next_explore = strategy.pop_explorations(max_batch_size)
+        if not next_explore:
+            break
+        sources, targets = zip(*next_explore)
+        progress.update(len(sources))
+
         # Evaluate it
-        with intervention.hooks(model, source=source, target=target):
-            logits = model(prompt)[0]
-        strength = metric(original_predictions, logits)
+        with intervention.batch_hooks(model, sources=sources, targets=targets):
+            logits = model([prompt] * len(sources))
 
-        if isinstance(strength, torch.Tensor):
-            strength = strength.item()
+        for logit, source, target in zip(logits, sources, targets):
+            strength = metric(original_predictions, logit)
 
-        strategy.report(source, target, strength)
-        connections.append(Connexion(source, target, strength, "All layers"))
+            if isinstance(strength, torch.Tensor):
+                strength = strength.item()
+
+            strategy.report(source, target, strength)
+            connections.append(Connexion(source, target, strength, "All layers"))
 
     return connections
 
