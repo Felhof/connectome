@@ -20,10 +20,8 @@ from utils import Connexion, coerce_int
 
 # Types
 
-Metric = Callable[[Float[Tensor, "seq vocab"], Float[Tensor, "seq vocab"]],
-                  float]
-"""A metric is a function that take the original logits on a prompt and the patched logits 
-after an intervention and returns a number."""
+Metric = Callable[[Float[Tensor, "seq vocab"]], float]
+"""A metric is a function that take the logits on a prompt and returns how well the model is doing."""
 
 # Interventions
 
@@ -229,39 +227,18 @@ class CropIntervention(BaseCorruptIntervention):
 # Metrics
 
 
-def logit_diff_metric(model: HookedTransformer, correct: str, incorrect: str):
-    correct_token = model.to_single_token(correct)
-    incorrect_token = model.to_single_token(incorrect)
-
-    def metric(
-        original_logits: Float[Tensor, "seq vocab"],
-        patched_logits: Float[Tensor, "seq vocab"],
-    ) -> float:
-        original_diff = (original_logits[-1, correct_token] -
-                         original_logits[-1, incorrect_token])
-        patched_diff = (patched_logits[-1, correct_token] -
-                        patched_logits[-1, incorrect_token])
-        return (patched_diff - original_diff) / original_diff
-
-    return metric
-
-
-def logit_diffs_metric(model: HookedTransformer, correct: str,
-                       incorrects: list[str]) -> Callable[..., float]:
+def logit_diff_metric(model: HookedTransformer, correct: str, *incorrect: str) -> Metric:
     correct_param_id = model.to_single_token(correct)
     incorrect_param_ids = [
-        model.to_single_token(incorrect) for incorrect in incorrects
+        model.to_single_token(incorrect) for incorrect in incorrect
     ]
 
     def metric(
-        original_logits: Float[Tensor, "seq vocab"],
-        patched_logits: Float[Tensor, "seq vocab"],
+        logits: Float[Tensor, "seq vocab"],
     ) -> float:
-        original_incorrect = original_logits[-1, incorrect_param_ids].max()
-        baseline = original_logits[-1, correct_param_id] - original_incorrect
-        patched_incorrect = patched_logits[-1, incorrect_param_ids].max()
-        logit_diff = patched_logits[-1, correct_param_id] - patched_incorrect
-        return (logit_diff - baseline) / baseline
+        incorrect_logit = logits[-1, incorrect_param_ids].max()
+        correct_logit = logits[-1, correct_param_id]
+        return incorrect_logit - correct_logit
 
     return metric
 
@@ -434,7 +411,7 @@ def connectom(
 ) -> list[Connexion]:
     tokens = model.to_str_tokens(prompt)
     n_tokens = len(tokens)
-    original_predictions = model(prompt)[0]
+    baseline_strength = metric(model(prompt)[0])
 
     connections: List[Connexion] = []
     progress = tqdm(itertools.count(), desc="Exploring", unit=" connexions")
@@ -454,14 +431,17 @@ def connectom(
             logits = model([prompt] * len(sources))
 
         for logit, source, target in zip(logits, sources, targets):
-            strength = metric(original_predictions, logit)
+            strength = metric(logit)
+            performance = (strength - baseline_strength) / baseline_strength
 
-            if isinstance(strength, torch.Tensor):
-                strength = strength.item()
-
-            strategy.report(source, target, strength)
+            strategy.report(source, target, performance)
             connections.append(
-                Connexion(source, target, strength, "All layers"))
+                Connexion(source, target, performance, "All layers"))
+
+    # Make sure all the performances are floats and not tensors
+    # We don't do it before to not trigger synchronisation with cuda
+    for connexion in connections:
+        connexion.strength = float(connexion.strength)
 
     return connections
 
