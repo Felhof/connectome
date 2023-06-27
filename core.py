@@ -238,7 +238,7 @@ def logit_diff_metric(model: HookedTransformer, correct: str, *incorrect: str) -
     ) -> float:
         incorrect_logit = logits[-1, incorrect_param_ids].max()
         correct_logit = logits[-1, correct_param_id]
-        return incorrect_logit - correct_logit
+        return correct_logit - incorrect_logit
 
     return metric
 
@@ -412,10 +412,15 @@ def connectom(
     tokens = model.to_str_tokens(prompt)
     n_tokens = len(tokens)
     baseline_strength = metric(model(prompt)[0])
+    print(f"Baseline strength: {baseline_strength:.2f}")
 
     connections: List[Connexion] = []
-    progress = tqdm(itertools.count(), desc="Exploring", unit=" connexions")
     strategy.start(n_tokens)
+    try:
+        total = len(strategy)
+    except TypeError:
+        total = None
+    progress = tqdm(itertools.count(), desc="Exploring", unit=" connexions", total=total)
     while True:
         # Get the next source and target to explore
         next_explore = strategy.pop_explorations(max_batch_size)
@@ -490,7 +495,7 @@ def plot_graphviz_connectome(
 
 
 def plot_attn_connectome(model: HookedTransformer, prompt: str,
-                         connectome: List[Connexion]):
+                         connectome: List[Connexion], **plotly_kwargs):
     tokens = model.to_str_tokens(prompt)
     n_tokens = len(tokens)
     # Maybe we want to sort the connexions by size of patch?
@@ -511,6 +516,7 @@ def plot_attn_connectome(model: HookedTransformer, prompt: str,
         color_continuous_scale="RdBu",
         color_continuous_midpoint=0,
         title="Attention connectome",
+        **plotly_kwargs,
     )
 
 
