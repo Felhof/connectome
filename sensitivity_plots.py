@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from transformer_lens import HookedTransformer
 
-import diego as d
+import core
 
 # %%
 torch.set_grad_enabled(False)
@@ -73,7 +73,7 @@ source_pos = [9, 10, 11]
 replace_pos_up_to = min(source_pos)
 target_pos = [14] * len(source_pos)
 original_str_tokens = model.to_str_tokens(original_prompt)
-metric = d.logit_diff_metric(model, ' John', ' Mary')
+metric = core.logit_diff_metric(model, ' John', ' Mary')
 original_predictions = model(original_prompt)[0]
 
 results = {pos: [] for pos in source_pos}
@@ -85,7 +85,7 @@ for distance in distances:
         corrupted_prompts.append("".join(corrupted_prompt))
 
     for corrupt_prompt in tqdm(corrupted_prompts):
-        intervention = d.CorruptIntervention(model, original_prompt, corrupt_prompt) # type: ignore
+        intervention = core.CorruptIntervention(model, original_prompt, corrupt_prompt) # type: ignore
 
         with intervention.batch_hooks(model, sources=source_pos, targets=target_pos):
             logits = model([original_prompt] * len(source_pos))

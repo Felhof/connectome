@@ -3,7 +3,7 @@ from functools import partial
 import streamlit as st
 from transformer_lens import HookedTransformer
 
-import diego as d
+import core
 
 st.title("Connectome Visualizer")
 
@@ -49,12 +49,12 @@ with col2:
 @st.cache_data
 def get_connectome(prompt, correct_token, incorrect_token, model_name):
     model = load_model(model_name)  # To invalidate cache if model changes
-    return d.connectom(
+    return core.connectom(
         model,
         prompt,
-        d.logit_diff_metric(model, correct_token, incorrect_token),
-        d.ZeroPattern(),
-        d.BasicStrategy(),
+        core.logit_diff_metric(model, correct_token, incorrect_token),
+        core.ZeroPattern(),
+        core.BasicStrategy(),
     )
 
 
@@ -64,14 +64,14 @@ tab_graphviz, tab_attention = st.tabs(["Graphviz", "Attention"])
 
 with tab_graphviz:
     threshold = st.slider("Threshold", 0.1, 1.0, 0.2)
-    graph = d.plot_graphviz_connectome(model,
-                                       prompt,
-                                       connectome,
-                                       threshold=threshold)
+    graph = core.plot_graphviz_connectome(model,
+                                          prompt,
+                                          connectome,
+                                          threshold=threshold)
 
     st.graphviz_chart(graph)
 
 with tab_attention:
-    st.plotly_chart(d.plot_attn_connectome(model, prompt, connectome))
+    st.plotly_chart(core.plot_attn_connectome(model, prompt, connectome))
 
 st.write(model.to_str_tokens(prompt))
