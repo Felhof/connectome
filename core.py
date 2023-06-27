@@ -267,8 +267,8 @@ class Strategy:
         if max_explorations is None:
             max_explorations = len(self.to_explore)
 
-        new = self.to_explore[-max_explorations:]
-        del self.to_explore[-max_explorations:]
+        new = self.to_explore[:max_explorations]
+        del self.to_explore[:max_explorations]
         return new
 
     def __iter__(self):
