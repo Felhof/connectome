@@ -178,6 +178,78 @@ class CorruptIntervention(Intervention):
         self.model.cfg.use_split_qkv_input = old_use_split_qkv_input
 
 
+class CropIntervention(Intervention):
+    def __init__(self, model: HookedTransformer, clean_input: str):
+        self.model = model
+        self.clean_input = clean_input
+
+        clean_input_tokenization = model.to_tokens(clean_input)[0].tolist()
+        bos_token = clean_input_tokenization[0]
+        self.corrupt_caches = [
+            model.run_with_cache(
+                torch.tensor([bos_token] + clean_input_tokenization[max(1,start):]),
+                names_filter=lambda n: n.endswith("v") or n.endswith("k") or n.endswith("attn_scores")
+            )[1]
+            for start in range(len(clean_input_tokenization))
+        ]
+        self.clean_cache = model.run_with_cache(clean_input, names_filter=lambda n: n.endswith('resid_pre'))[1]
+
+    def filter(self, name: str):
+        return name.endswith("z")
+
+    def hook(
+            self,
+            main_activation: Float[Tensor, "batch seq head d_head"],
+            hook: HookPoint,
+            source: Union[int, slice],
+            target: Union[int, slice],
+    ):    
+        assert isinstance(source, int), "source must be int for crop intervention"
+        old_use_split_qkv_input = self.model.cfg.use_split_qkv_input
+        self.model.cfg.use_split_qkv_input = True
+        hook.remove_hooks()
+
+        # Step 1: compute the attention score between clean query and corrupted key
+        layer = hook.layer()
+
+        def corrupt_source(activation: Float[Tensor, "batch seq head d_head"], hook: HookPoint):
+            activation[:, source] = self.corrupt_caches[source][hook.name][0,min(source,1)]
+
+        def store_score(activation: Float[Tensor, "batch head seq_query seq_key"], hook: HookPoint):
+            hook.ctx["score"] = activation[:, :, target, source]
+            raise RuntimeError("Stop the forward pass here")
+
+        with self.model.hooks(fwd_hooks=[
+            (get_act_name("k", layer), corrupt_source),
+            (get_act_name("attn_scores", layer), store_score),
+        ]):
+            clean_resid_pre = self.clean_cache[get_act_name('resid_pre', layer)]
+            try:
+                self.model.blocks[layer](clean_resid_pre)
+            except RuntimeError:
+                pass
+
+        # Step 2: compute the new z
+
+        def corrupt_score(activation: Float[Tensor, "batch head seq_query seq_key"], hook: HookPoint):
+            activation[:, :, target, source] = hook.ctx.pop("score")
+
+        def hook_z(activation: Float[Tensor, "batch seq head d_head"], hook: HookPoint):
+            main_activation[:, target] = activation[:, target]
+            raise RuntimeError("Stop the forward pass here")
+
+        with self.model.hooks(fwd_hooks=[
+            (get_act_name("v", layer), corrupt_source),
+            (get_act_name("attn_scores", layer), corrupt_score),
+            (get_act_name("z", layer), hook_z),
+        ]):
+            try:
+                self.model.blocks[layer](clean_resid_pre)
+            except RuntimeError:
+                pass
+
+        self.model.cfg.use_split_qkv_input = old_use_split_qkv_input
+
 # Metrics
 
 
