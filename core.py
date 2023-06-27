@@ -442,6 +442,8 @@ def connectom(
             break
         sources, targets = zip(*next_explore)
         progress.update(len(sources))
+        # Show number of things in the queue
+        progress.set_postfix({"to explore": len(strategy.to_explore)})
 
         # Evaluate it
         with intervention.batch_hooks(model, sources=sources, targets=targets):
