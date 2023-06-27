@@ -214,8 +214,7 @@ class Connexion:
 
     @property
     def is_single_pair(self) -> bool:
-        return (coerce_int(self.source) is not None
-                and coerce_int(self.target) is not None)
+        return self.area == 1
 
     @property
     def source_int(self) -> int:
@@ -230,6 +229,12 @@ class Connexion:
         if target is None:
             raise ValueError(f"Cannot get single int from {self.target}")
         return target
+
+    @property
+    def area(self) -> int:
+        source_size = 1 if isinstance(self.source, int) else self.source.stop - self.source.start
+        target_size = 1 if isinstance(self.target, int) else self.target.stop - self.target.start
+        return source_size * target_size
 
 
 def sankey_diagram_of_connectome(

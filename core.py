@@ -2,6 +2,7 @@ import abc
 import itertools
 import math
 import warnings
+from collections import defaultdict
 from contextlib import contextmanager
 from functools import partial
 from typing import List, Callable, Union, Optional, Iterable
@@ -245,7 +246,7 @@ def logit_diff_metric(model: HookedTransformer, correct: str, *incorrect: str) -
 
 # Exploration strategies
 
-EndPoint = Union[int, slice, list[int]]
+EndPoint = Union[int, slice]
 
 
 class Strategy:
@@ -279,12 +280,6 @@ class Strategy:
             raise StopIteration
         return self.to_explore.pop()
 
-    def report_all(self, source: EndPoint, target: EndPoint, strength: float):
-        assert type(source) == type(target)
-        if isinstance(source, list):
-            for s, t in zip(source, target):
-                self.report(s, t, strength)
-
     def report(self, source: Union[int, slice], target: Union[int, slice],
                strength: float):
         pass
@@ -310,8 +305,7 @@ class BisectStrategy(Strategy):
         all_tokens = slice(0, n_tokens)
         self.to_explore = [(all_tokens, all_tokens)]
 
-    def report(self, source: Union[int, slice], target: Union[int, slice],
-               strength: float):
+    def report(self, source: EndPoint, target: EndPoint, strength: float):
         assert type(source) == type(target) == slice
 
         # If the connexion is too weak, we can skip the whole square
@@ -359,8 +353,7 @@ class BacktrackingStrategy(Strategy):
             for source in range(1, target + 1):
                 yield (source, target)
 
-    def report(self, source: Union[int, slice], target: Union[int, slice],
-               strength: float):
+    def report(self, source: EndPoint, target: EndPoint, strength: float):
         assert type(source) == type(target) == int
         # If the connexion is too weak, don't explore it
         if abs(strength) >= self.threshold:
@@ -380,8 +373,7 @@ class BacktrackBisectStrategy(Strategy):
         self.seen.clear()
         self.to_explore = [(slice(1, n_tokens), n_tokens - 1)]
 
-    def report(self, source: Union[int, slice], target: Union[int, slice],
-               strength: float):
+    def report(self, source: EndPoint, target: EndPoint, strength: float):
         assert isinstance(target, int)
         assert isinstance(source, slice)
 
@@ -398,6 +390,125 @@ class BacktrackBisectStrategy(Strategy):
             mid = math.ceil((source.start + source.stop) / 2)
             self.to_explore.append((slice(source.start, mid), target))
             self.to_explore.append((slice(mid, source.stop), target))
+
+
+class SplitStrategy(Strategy):
+    """A strategy that groups tokens into clusters and explores the connections between clusters
+    before exploring the connections inside clusters. """
+
+    DEFAULT_SPLITS = (
+        '\n\n',
+        # '\n',
+        tuple('.!?'),
+        tuple(',:;'),
+    )
+
+    def __init__(self, model: HookedTransformer, prompt: str, threshold: float,
+                 delimiters: tuple[Union[str, tuple[str, ...]], ...] = DEFAULT_SPLITS):
+        super().__init__()
+        self.model = model
+        self.prompt = prompt
+        self.threshold = threshold
+        # Make all delimiters tuples
+        self.delimiters = tuple((delimiter,) if isinstance(delimiter, str) else delimiter
+                                for delimiter in delimiters)
+        # every delimiter should be a token
+        for delimiters in self.delimiters:
+            for delimiter in delimiters:
+                tokens = self.model.to_str_tokens(delimiter, prepend_bos=False)
+                assert len(tokens) == 1, f"Delimiter {delimiter} is not a single token but {tokens}."
+
+        self.tree: dict[tuple[int, int], list[EndPoint]] = self.build_tree(model, prompt)
+
+    def build_tree(self, model: HookedTransformer, prompt: str) -> dict[tuple[int, int], list[EndPoint]]:
+        tokens = model.to_str_tokens(prompt)
+
+        def new_child(parent: slice, child_start, child_end):
+            # We include the delimiter in the previous slice
+            child = slice(child_start, child_end + 1)
+            # Always add the child to the current layer, to continue splitting it later
+            current_layer.append(child)
+            # Avoid loops
+            if child != parent:
+                tree[parent.start, parent.stop].append(child)
+
+        tree: dict[tuple[int, int], list[EndPoint]] = defaultdict(list)
+        last_layer = [slice(1, len(tokens))]
+        # Depth by depth in the tree
+        for delimiters in self.delimiters:
+            current_layer = []
+            for parent in last_layer:
+                child_start = parent.start
+                for child_end, token in enumerate(tokens[parent], start=parent.start):
+                    # Check if the delimiter is (part of) the token (e.g. \n\n is part of \n\n\n)
+                    if any(d in token for d in delimiters):
+                        new_child(parent, child_start, child_end)
+                        child_start = child_end + 1
+                # We include the last slice, if it's not empty
+                if child_start < parent.stop:
+                    new_child(parent, child_start, parent.stop - 1)
+
+            # Keep the parent slices since none have children of the kind
+            if current_layer:
+                last_layer = current_layer
+
+        for parent in last_layer:
+            # Slices of length one are already in the tree
+            if parent.stop != parent.start + 1:
+                tree[parent.start, parent.stop] = [
+                    slice(t, t + 1) for t in range(parent.start, parent.stop)
+                ]
+
+        return tree
+
+    def start(self, n_tokens: int):
+        assert n_tokens == len(self.model.to_str_tokens(self.prompt))
+        all_tokens = slice(1, n_tokens)
+        self.to_explore = [(all_tokens, all_tokens)]
+
+    def report(self, source: Union[int, slice], target: Union[int, slice],
+               strength: float):
+        if abs(strength) < self.threshold:
+            return
+
+        if isinstance(source, int) or source.stop == source.start + 1:
+            starts = [source]
+        else:
+            starts = self.tree[source.start, source.stop]
+
+        if isinstance(target, int) or target.stop == target.start + 1:
+            ends = [target]
+        else:
+            ends = self.tree[target.start, target.stop]
+
+        if len(ends) == 1 and len(starts) == 1:
+            # We can't split the source or target further
+            return
+
+        for start in starts:
+            for end in ends:
+                end_stop = end.stop if isinstance(end, slice) else end
+                start_start = start.start if isinstance(start, slice) else start
+                if end_stop > start_start:
+                    self.to_explore.append((start, end))
+
+    def show_tree(self):
+        tokens = self.model.to_str_tokens(self.prompt)
+        positions = list(range(len(tokens)))
+        for source, targets in sorted(self.tree.items()):
+            print(f"{source}: {tokens[source[0]:source[1]]}")
+            child_positions = []
+            for target in targets:
+                print(f"  -> {target}: {tokens[target]}")
+                if isinstance(target, slice):
+                    child_positions.extend(positions[target])
+                else:
+                    child_positions.append(positions[target])
+            assert sorted(child_positions) == positions[source[0]:source[1]], (
+                f"Child positions {child_positions} do not match parent positions "
+                f"{positions[source[0]:source[1]]}"
+            )
+
 
 
 @torch.inference_mode()
@@ -436,17 +547,12 @@ def connectom(
             logits = model([prompt] * len(sources))
 
         for logit, source, target in zip(logits, sources, targets):
-            strength = metric(logit)
+            strength = float(metric(logit))
             performance = (strength - baseline_strength) / baseline_strength
 
             strategy.report(source, target, performance)
             connections.append(
                 Connexion(source, target, performance, "All layers"))
-
-    # Make sure all the performances are floats and not tensors
-    # We don't do it before to not trigger synchronisation with cuda
-    for connexion in connections:
-        connexion.strength = float(connexion.strength)
 
     return connections
 
@@ -500,7 +606,7 @@ def plot_attn_connectome(model: HookedTransformer, prompt: str,
     n_tokens = len(tokens)
     # Maybe we want to sort the connexions by size of patch?
     connexions = torch.zeros((n_tokens, n_tokens))
-    for connexion in connectome:
+    for connexion in sorted(connectome, key=lambda c: c.area, reverse=True):
         connexions[connexion.target, connexion.source] = connexion.strength
 
     triu = torch.triu(torch.ones(n_tokens, n_tokens, dtype=torch.bool),
