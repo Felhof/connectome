@@ -342,24 +342,28 @@ class BisectStrategy(Strategy):
             return
 
         if source.stop - source.start == 1:
-            # We have an interval of length 1, so we can't split it any further
-            assert target.stop - target.start == 1
+            source_parts = [source]
         else:
-            # Split the intervals in half and add the 4 new intervals to the set
             source_mid = math.ceil((source.start + source.stop) / 2)
-            target_mid = math.ceil((target.start + target.stop) / 2)
-            for start in [
-                    slice(source.start, source_mid),
-                    slice(source_mid, source.stop),
-            ]:
-                for stop in [
-                        slice(target.start, target_mid),
-                        slice(target_mid, target.stop),
-                ]:
-                    # If all sources are after all targets, we can skip the whole square
-                    if start.start < stop.stop:
-                        self.to_explore.append((start, stop))
+            source_parts = [slice(source.start, source_mid),
+                            slice(source_mid, source.stop)]
 
+        if target.stop - target.start == 1:
+            target_parts = [target]
+        else:
+            target_mid = math.ceil((target.start + target.stop) / 2)
+            target_parts = [slice(target.start, target_mid),
+                            slice(target_mid, target.stop)]
+
+        # If we can't bisect anymore, because it's a single token
+        if len(source_parts) == 1 and len(target_parts) == 1:
+            return
+
+        for source_part in source_parts:
+            for target_part in target_parts:
+                # If all sources are after all targets, we can skip the whole square
+                if source_part.start < target_part.stop:
+                    self.to_explore.append((source_part, target_part))
 
 class BacktrackingStrategy(Strategy):
 
