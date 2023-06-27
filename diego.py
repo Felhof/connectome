@@ -197,6 +197,25 @@ def logit_diff_metric(model: HookedTransformer, correct: str, incorrect: str):
 
     return metric
 
+def logit_diffs_metric(model: HookedTransformer,
+                       correct: str,
+                       incorrects: list[str]) -> Callable[..., float]:
+
+    correct_param_id = model.to_single_token(correct)
+    incorrect_param_ids = [model.to_single_token(incorrect) for incorrect in incorrects]
+
+    def metric(
+            original_logits: Float[Tensor, "seq vocab"],
+            patched_logits: Float[Tensor, "seq vocab"],
+    ) -> float:
+        original_incorrect = original_logits[-1, incorrect_param_ids].max()
+        baseline = original_logits[-1, correct_param_id] - original_incorrect
+        patched_incorrect = patched_logits[-1, incorrect_param_ids].max()
+        logit_diff = patched_logits[-1, correct_param_id] - patched_incorrect
+        return (logit_diff - baseline) / baseline
+
+    return metric
+
 
 # Exploration strategies
 
