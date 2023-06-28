@@ -404,7 +404,8 @@ class SplitStrategy(Strategy):
     )
 
     def __init__(self, model: HookedTransformer, prompt: str, threshold: float,
-                 delimiters: tuple[Union[str, tuple[str, ...]], ...] = DEFAULT_SPLITS):
+                 delimiters: tuple[Union[str, tuple[str, ...]], ...] = DEFAULT_SPLITS,
+                 tokens_as_leaves=True):
         super().__init__()
         self.model = model
         self.prompt = prompt
@@ -419,6 +420,7 @@ class SplitStrategy(Strategy):
                 assert len(tokens) == 1, f"Delimiter {delimiter} is not a single token but {tokens}."
 
         self.tree: dict[tuple[int, int], list[EndPoint]] = self.build_tree(model, prompt)
+        self.tokens_as_leaves = tokens_as_leaves
 
     def build_tree(self, model: HookedTransformer, prompt: str) -> dict[tuple[int, int], list[EndPoint]]:
         tokens = model.to_str_tokens(prompt)
@@ -452,12 +454,13 @@ class SplitStrategy(Strategy):
             if current_layer:
                 last_layer = current_layer
 
-        for parent in last_layer:
-            # Slices of length one are already in the tree
-            if parent.stop != parent.start + 1:
-                tree[parent.start, parent.stop] = [
-                    slice(t, t + 1) for t in range(parent.start, parent.stop)
-                ]
+        if self.tokens_as_leaves:
+            for parent in last_layer:
+                # Slices of length one are already in the tree
+                if parent.stop != parent.start + 1:
+                    tree[parent.start, parent.stop] = [
+                        slice(t, t + 1) for t in range(parent.start, parent.stop)
+                    ]
 
         return tree
 
