@@ -410,6 +410,7 @@ class SplitStrategy(Strategy):
         self.model = model
         self.prompt = prompt
         self.threshold = threshold
+        self.tokens_as_leaves = tokens_as_leaves
         # Make all delimiters tuples
         self.delimiters = tuple((delimiter,) if isinstance(delimiter, str) else delimiter
                                 for delimiter in delimiters)
@@ -420,7 +421,6 @@ class SplitStrategy(Strategy):
                 assert len(tokens) == 1, f"Delimiter {delimiter} is not a single token but {tokens}."
 
         self.tree: dict[tuple[int, int], list[EndPoint]] = self.build_tree(model, prompt)
-        self.tokens_as_leaves = tokens_as_leaves
 
     def build_tree(self, model: HookedTransformer, prompt: str) -> dict[tuple[int, int], list[EndPoint]]:
         tokens = model.to_str_tokens(prompt)
@@ -561,6 +561,57 @@ def connectom(
 
 
 # Other visualization
+def filter_connectome(
+    connectome: List[Connexion],
+    depth: Optional[int] = None,
+    threshold: float = 0.0,
+) -> List[Connexion]:
+    """Filter the connectome to only keep the connexion at a given depth.
+
+    If depth is None, keep only the token-to-token connexions.
+    Otherwise, it builds a tree based on subset ordering of the sources and targets
+    and keeps only the connexions at the given depth and the leaves above it.
+    """
+
+    if depth is None:
+        return [
+            connexion
+            for connexion in connectome
+            if abs(connexion.strength) >= threshold
+            and connexion.is_single_pair
+        ]
+
+    # Sort the connections by area
+    connectome = sorted(connectome, key=lambda c: c.area, reverse=True)
+    # Filter out the ones that are too small
+    connectome = [c for c in connectome if abs(c.strength) >= threshold]
+
+    # Build the tree
+    tree: dict[Union[None, Connexion], list[Connexion]] = {None: []}
+    for connexion in connectome:
+        # find the parent of the connexion
+        possible_parents = []
+        for parent_connexion in tree:
+            if parent_connexion is not None and connexion.is_subset(parent_connexion):
+                possible_parents.append(parent_connexion)
+        parent = min(possible_parents, key=lambda c: c.area, default=None)
+        tree[parent].append(connexion)
+        tree[connexion] = []
+
+    kept = []
+    def recurse(connexion: Connexion, depth: int):
+        if depth == 0:
+            kept.append(connexion)
+        elif not tree[connexion]:  # is a leaf
+            kept.append(connexion)
+        else:
+            for child in tree[connexion]:
+                recurse(child, depth - 1)
+
+    for connexion in tree[None]:
+        recurse(connexion, depth)
+
+    return kept
 
 
 def plot_graphviz_connectome(
@@ -568,37 +619,48 @@ def plot_graphviz_connectome(
     prompt: str,
     connectome: List[Connexion],
     threshold: float = 0.0,
+    depth: Optional[int] = None,
 ) -> graphviz.Digraph:
     tokens = model.to_str_tokens(prompt)
     graph = graphviz.Digraph()
 
+    # Keep only the connexions we care about
+    connectome = filter_connectome(connectome, depth=depth, threshold=threshold)
+
     # Add all the used nodes to the graph with their corresponding string
-    tokens_used = {
-        coerce_int(endpoint)
+    nodes = {
+        endpoint
         for connexion in connectome
-        for endpoint in (connexion.source, connexion.target)
-        if abs(connexion.strength) >= threshold
-        and coerce_int(endpoint) is not None
+        for endpoint in (connexion.source_tuple, connexion.target_tuple)
     }
-    for i, token in enumerate(tokens):
-        if i in tokens_used:
-            graph.node(str(i), label=f"{i}: {token!r}")
+    for endpoint in nodes:
+        if endpoint[0] + 1 == endpoint[1]:  # single token
+            pos = f"{endpoint[0]}"
+        else:
+            pos = f"{endpoint[0]}:{endpoint[1]}"
+
+        text = ''.join(tokens[endpoint[0]:endpoint[1]])
+        text = repr(text)
+        # Shorten the text if it's too long
+        if len(text) > 20:
+            text = text[:8] + "..." + text[-8:]
+        text = text.replace("\\", "\\\\")
+        graph.node(str(endpoint), label=f"{pos}: {text}")
 
     # Add all the important connexions to the graph
     min_strength = min(abs(connexion.strength) for connexion in connectome)
     max_strength = max(abs(connexion.strength) for connexion in connectome)
     for connexion in connectome:
-        if abs(connexion.strength) >= threshold and connexion.is_single_pair:
-            graph.edge(
-                str(connexion.source_int),
-                str(connexion.target_int),
-                label=f"{connexion.strength:.2f}",
-                color="#87D37C" if connexion.strength < 0 else "#E52B50",
-                penwidth=str(
-                    int(
-                        map_range(abs(connexion.strength), min_strength,
-                                  max_strength, 1, 7))),
-            )
+        graph.edge(
+            str(connexion.source_tuple),
+            str(connexion.target_tuple),
+            label=f"{connexion.strength:.2f}",
+            color="#87D37C" if connexion.strength < 0 else "#E52B50",
+            penwidth=str(
+                int(
+                    map_range(abs(connexion.strength), min_strength,
+                              max_strength, 1, 7))),
+        )
 
     return graph
 

@@ -205,6 +205,12 @@ def coerce_int(value: Union[int, slice]) -> Optional[int]:
         return None
 
 
+def endpoint_to_start_end(endpoint: Union[int, slice]) -> Tuple[int, int]:
+    if isinstance(endpoint, int):
+        return endpoint, endpoint + 1
+    else:
+        return endpoint.start, endpoint.stop
+
 @dataclass
 class Connexion:
     source: Union[int, slice]
@@ -236,6 +242,33 @@ class Connexion:
         target_size = 1 if isinstance(self.target, int) else self.target.stop - self.target.start
         return source_size * target_size
 
+    @property
+    def source_tuple(self) -> Tuple[int, int]:
+        return endpoint_to_start_end(self.source)
+
+    @property
+    def target_tuple(self) -> Tuple[int, int]:
+        return endpoint_to_start_end(self.target)
+
+    def is_subset(self, other: "Connexion"):
+        source_start, source_end = self.source_tuple
+        target_start, target_end = self.target_tuple
+        other_source_start, other_source_end = other.source_tuple
+        other_target_start, other_target_end = other.target_tuple
+        return (
+            other_source_start <= source_start <= source_end <= other_source_end
+            and other_target_start <= target_start <= target_end <= other_target_end
+        )
+
+    def __hash__(self):
+        source = self.source if isinstance(self.source, int) else (self.source.start, self.source.stop)
+        target = self.target if isinstance(self.target, int) else (self.target.start, self.target.stop)
+        return hash((source, target, self.strength, self.note))
+
+    def __repr__(self) -> str:
+        source = self.source if isinstance(self.source, int) else f"{self.source.start}:{self.source.stop}"
+        target = self.target if isinstance(self.target, int) else f"{self.target.start}:{self.target.stop}"
+        return f"<Connexion({source} -> {target}: {self.strength:.2f})>"
 
 def sankey_diagram_of_connectome(
     model: HookedTransformer,
