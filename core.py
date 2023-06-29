@@ -271,18 +271,33 @@ class Strategy:
         self.to_explore: list[tuple[EndPoint, EndPoint]] = []
 
     def start(self, n_tokens: int):
+        """Called at the start of the exploration, with the number of tokens in the input.
+        Override this method to initialize the exploration."""
         raise NotImplementedError
 
     def pop_explorations(
-        self,
-        max_explorations: Optional[int] = None
+            self,
+            max_explorations: Optional[int] = None
     ) -> list[tuple[EndPoint, EndPoint]]:
+        """Get the next explorations to do.
+
+        If `max_explorations` is not specified, all explorations are returned, otherwise at most `max_explorations` are returned.
+        """
         if max_explorations is None:
             max_explorations = len(self.to_explore)
 
         new = self.to_explore[:max_explorations]
         del self.to_explore[:max_explorations]
         return new
+
+    def explore_next(self, source: EndPoint, target: EndPoint):
+        """Add a new exploration to the list of explorations to do.
+
+        If all sources are after all targets, nothing is added."""
+        source_start = source.start if isinstance(source, slice) else source
+        target_end = target.stop if isinstance(target, slice) else target
+        if source_start < target_end:
+            self.to_explore.append((source, target))
 
     def __iter__(self):
         return self
@@ -294,6 +309,8 @@ class Strategy:
 
     def report(self, source: Union[int, slice], target: Union[int, slice],
                strength: float):
+        """Called when the results of an intervention are available.
+        Override to generate new things to explore based on the results of the intervention."""
         pass
 
     def __str__(self):
@@ -347,9 +364,7 @@ class BisectStrategy(Strategy):
 
         for source_part in source_parts:
             for target_part in target_parts:
-                # If all sources are after all targets, we can skip the whole square
-                if source_part.start < target_part.stop:
-                    self.to_explore.append((source_part, target_part))
+                self.explore_next(source_part, target_part)
 
 class BacktrackingStrategy(Strategy):
 
@@ -360,19 +375,21 @@ class BacktrackingStrategy(Strategy):
 
     def start(self, n_tokens: int):
         self.seen = set()
-        self.to_explore = list(self.new_to_visit(n_tokens - 1))
+        self.to_explore = []
+        self.backtrack_from(n_tokens - 1)
 
-    def new_to_visit(self, target: int):
+    def backtrack_from(self, target: int):
+        """Explore all the sources to the given target, if not already explored."""
         if target not in self.seen:
             self.seen.add(target)
             for source in range(1, target + 1):
-                yield (source, target)
+                self.explore_next(source, target)
 
     def report(self, source: EndPoint, target: EndPoint, strength: float):
         assert type(source) == type(target) == int
         # If the connexion is too weak, don't explore it
         if abs(strength) >= self.threshold:
-            self.to_explore.extend(self.new_to_visit(source))
+            self.backtrack_from(source)
 
 
 class BacktrackBisectStrategy(Strategy):
@@ -399,12 +416,11 @@ class BacktrackBisectStrategy(Strategy):
             # -> We explore the possible parents of source.start
             if source.start not in self.seen:
                 self.seen.add(source.start)
-                self.to_explore.append((slice(1,
-                                              source.start + 1), source.start))
+                self.explore_next(slice(1, source.start + 1), source.start)
         else:
             mid = math.ceil((source.start + source.stop) / 2)
-            self.to_explore.append((slice(source.start, mid), target))
-            self.to_explore.append((slice(mid, source.stop), target))
+            self.explore_next(slice(source.start, mid), target)
+            self.explore_next(slice(mid, source.stop), target)
 
 
 class SplitStrategy(Strategy):
@@ -420,12 +436,14 @@ class SplitStrategy(Strategy):
 
     def __init__(self, model: HookedTransformer, prompt: str, threshold: float,
                  delimiters: Iterable[Union[str, tuple[str, ...]]] = DEFAULT_SPLITS,
-                 tokens_as_leaves=True):
+                 tokens_as_leaves=True,
+                 delimiters_as_leaves=False):
         super().__init__()
         self.model = model
         self.prompt = prompt
         self.threshold = threshold
         self.tokens_as_leaves = tokens_as_leaves
+        self.delimiters_as_leaves = delimiters_as_leaves
         # Make all delimiters tuples
         self.delimiters: list[tuple[str, ...]] = [(delimiter,) if isinstance(delimiter, str) else delimiter
                                                   for delimiter in delimiters]
@@ -440,7 +458,8 @@ class SplitStrategy(Strategy):
     def build_tree(self, model: HookedTransformer, prompt: str) -> dict[tuple[int, int], list[EndPoint]]:
         tokens = model.to_str_tokens(prompt)
 
-        def new_child(parent: slice, child_start, child_end):
+        def new_child(parent: slice, child_start: int, child_end: int):
+            """Create a new child and add it to the tree. Both start and end are included."""
             # We include the delimiter in the previous slice
             child = slice(child_start, child_end + 1)
             # Always add the child to the current layer, to continue splitting it later
@@ -449,6 +468,7 @@ class SplitStrategy(Strategy):
             if child != parent:
                 tree[parent.start, parent.stop].append(child)
 
+        # Only for warnings
         delimiter_not_used = {d for ds in self.delimiters for d in ds}
 
         def needs_splitting(token: str, delimiters: tuple[str, ...]) -> bool:
@@ -468,7 +488,12 @@ class SplitStrategy(Strategy):
                 child_start = parent.start
                 for child_end, token in enumerate(tokens[parent], start=parent.start):
                     if needs_splitting(token, delimiters):
-                        new_child(parent, child_start, child_end)
+                        # Put the delimiter on its own group if there is more than one token in the group
+                        if self.delimiters_as_leaves and child_start < child_end:
+                            new_child(parent, child_start, child_end - 1)  # Before the delimiter
+                            new_child(parent, child_end, child_end)  # The delimiter
+                        else:
+                            new_child(parent, child_start, child_end)
                         child_start = child_end + 1
                 # We include the last slice, if it's not empty
                 if child_start < parent.stop:
@@ -502,15 +527,15 @@ class SplitStrategy(Strategy):
         if abs(strength) < self.threshold:
             return
 
-        if isinstance(source, int) or source.stop == source.start + 1:
+        try:
+            starts = self.tree[source.start, source.stop] or [source]
+        except AttributeError:  # source is an int
             starts = [source]
-        else:
-            starts = self.tree[source.start, source.stop]
 
-        if isinstance(target, int) or target.stop == target.start + 1:
+        try:
+            ends = self.tree[target.start, target.stop] or [target]
+        except AttributeError:  # target is an int
             ends = [target]
-        else:
-            ends = self.tree[target.start, target.stop]
 
         if len(ends) == 1 and len(starts) == 1:
             # We can't split the source or target further
@@ -518,10 +543,7 @@ class SplitStrategy(Strategy):
 
         for start in starts:
             for end in ends:
-                end_stop = end.stop if isinstance(end, slice) else end
-                start_start = start.start if isinstance(start, slice) else start
-                if end_stop > start_start:
-                    self.to_explore.append((start, end))
+                self.explore_next(start, end)
 
     def show_tree(self):
         tokens = self.model.to_str_tokens(self.prompt)
@@ -541,7 +563,6 @@ class SplitStrategy(Strategy):
             )
 
 
-
 @torch.inference_mode()
 def connectom(
     model: HookedTransformer,
@@ -555,6 +576,7 @@ def connectom(
     n_tokens = len(tokens)
     baseline_strength = metric(model(prompt)[0])
     print(f"Baseline strength: {baseline_strength:.2f}")
+    assert baseline_strength > 0.5, "The model cannot do the task."
 
     connections: List[Connexion] = []
     strategy.start(n_tokens)
@@ -602,18 +624,15 @@ def filter_connectome(
     and keeps only the connexions at the given depth and the leaves above it.
     """
 
-    # Filter out the ones that are too small
-    connectome = [c for c in connectome if abs(c.strength) >= threshold]
-    # Keep only the top k connections in strength
-    connectome = sorted(connectome, key=lambda c: abs(c.strength), reverse=True)[:top_k]
-
     if depth is None:
-        return [
+        kept = [
             connexion
             for connexion in connectome
             if abs(connexion.strength) >= threshold
-            and connexion.is_single_pair
+               and connexion.is_single_pair
         ]
+        kept = sorted(kept, key=lambda c: c.strength, reverse=True)[:top_k]
+        return kept
 
     # Sort the connections, biggest area first
     connectome = sorted(connectome, key=lambda c: c.area, reverse=True)
@@ -642,6 +661,11 @@ def filter_connectome(
 
     for connexion in tree[None]:
         recurse(connexion, depth)
+
+    # Filter out the ones that are too small
+    kept = [c for c in kept if abs(c.strength) >= threshold]
+    # Keep only the top k connections in strength
+    kept = sorted(kept, key=lambda c: abs(c.strength), reverse=True)[:top_k]
 
     return kept
 
@@ -675,8 +699,8 @@ def graphviz_connectome(
         text = ''.join(tokens[endpoint[0]:endpoint[1]])
         text = repr(text)
         # Shorten the text if it's too long
-        if len(text) > 20:
-            text = text[:8] + "..." + text[-8:]
+        if len(text) > 30:
+            text = text[:13] + "..." + text[-13:]
         text = text.replace("\\", "\\\\")
         graph.node(str(endpoint), label=f"{pos}: {text}")
 
