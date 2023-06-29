@@ -5,8 +5,9 @@ import warnings
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import partial
-from typing import List, Callable, Union, Optional, Iterable
+from typing import List, Callable, Union, Optional, Iterable, Literal
 
+import IPython.display
 import graphviz
 import plotly.express as px
 import torch
@@ -283,6 +284,9 @@ class Strategy:
     def report(self, source: Union[int, slice], target: Union[int, slice],
                strength: float):
         pass
+
+    def __str__(self):
+        return f"{self.__class__.__name__}"
 
 
 class BasicStrategy(Strategy):
@@ -565,6 +569,7 @@ def filter_connectome(
     connectome: List[Connexion],
     depth: Optional[int] = None,
     threshold: float = 0.0,
+    top_k: Optional[int] = None,
 ) -> List[Connexion]:
     """Filter the connectome to only keep the connexion at a given depth.
 
@@ -572,6 +577,11 @@ def filter_connectome(
     Otherwise, it builds a tree based on subset ordering of the sources and targets
     and keeps only the connexions at the given depth and the leaves above it.
     """
+
+    # Filter out the ones that are too small
+    connectome = [c for c in connectome if abs(c.strength) >= threshold]
+    # Keep only the top k connections in strength
+    connectome = sorted(connectome, key=lambda c: abs(c.strength), reverse=True)[:top_k]
 
     if depth is None:
         return [
@@ -581,10 +591,8 @@ def filter_connectome(
             and connexion.is_single_pair
         ]
 
-    # Sort the connections by area
+    # Sort the connections, biggest area first
     connectome = sorted(connectome, key=lambda c: c.area, reverse=True)
-    # Filter out the ones that are too small
-    connectome = [c for c in connectome if abs(c.strength) >= threshold]
 
     # Build the tree
     tree: dict[Union[None, Connexion], list[Connexion]] = {None: []}
@@ -614,18 +622,19 @@ def filter_connectome(
     return kept
 
 
-def plot_graphviz_connectome(
+def graphviz_connectome(
     model: HookedTransformer,
     prompt: str,
     connectome: List[Connexion],
     threshold: float = 0.0,
+    top_k: Optional[int] = None,
     depth: Optional[int] = None,
 ) -> graphviz.Digraph:
     tokens = model.to_str_tokens(prompt)
     graph = graphviz.Digraph()
 
     # Keep only the connexions we care about
-    connectome = filter_connectome(connectome, depth=depth, threshold=threshold)
+    connectome = filter_connectome(connectome, depth=depth, threshold=threshold, top_k=top_k)
 
     # Add all the used nodes to the graph with their corresponding string
     nodes = {
@@ -663,6 +672,33 @@ def plot_graphviz_connectome(
         )
 
     return graph
+
+
+def plot_graphviz_connectome(
+    model: HookedTransformer,
+    prompt: str,
+    connectome: List[Connexion],
+    threshold: float = 0.0,
+    top_k: Optional[int] = None,
+    depth: Optional[int] = None,
+    use_svg: bool = False,
+):
+    graph = graphviz_connectome(
+        model,
+        prompt,
+        connectome,
+        threshold=threshold,
+        top_k=top_k,
+        depth=depth,
+    )
+    if use_svg:
+        out = IPython.display.SVG(graph.pipe(format="svg", encoding="utf8"))
+    else:
+        out = IPython.display.Image(graph.pipe(format="png"))
+
+    IPython.display.display(out)
+    return graph
+
 
 
 def plot_attn_connectome(model: HookedTransformer, prompt: str,
