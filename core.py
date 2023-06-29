@@ -5,7 +5,7 @@ import warnings
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import partial
-from typing import List, Callable, Union, Optional, Iterable, Literal
+from typing import List, Callable, Union, Optional, Iterable
 
 import IPython.display
 import graphviz
@@ -18,7 +18,7 @@ from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
 from transformer_lens.utils import get_act_name
 
-from utils import Connexion, coerce_int
+from utils import Connexion
 
 # Types
 
@@ -419,7 +419,7 @@ class SplitStrategy(Strategy):
     )
 
     def __init__(self, model: HookedTransformer, prompt: str, threshold: float,
-                 delimiters: tuple[Union[str, tuple[str, ...]], ...] = DEFAULT_SPLITS,
+                 delimiters: Iterable[Union[str, tuple[str, ...]], ...] = DEFAULT_SPLITS,
                  tokens_as_leaves=True):
         super().__init__()
         self.model = model
@@ -427,8 +427,8 @@ class SplitStrategy(Strategy):
         self.threshold = threshold
         self.tokens_as_leaves = tokens_as_leaves
         # Make all delimiters tuples
-        self.delimiters = tuple((delimiter,) if isinstance(delimiter, str) else delimiter
-                                for delimiter in delimiters)
+        self.delimiters: list[tuple[str, ...]] = [(delimiter,) if isinstance(delimiter, str) else delimiter
+                                                  for delimiter in delimiters]
         # every delimiter should be a token
         for delimiters in self.delimiters:
             for delimiter in delimiters:
@@ -449,6 +449,16 @@ class SplitStrategy(Strategy):
             if child != parent:
                 tree[parent.start, parent.stop].append(child)
 
+        delimiter_not_used = {d for ds in self.delimiters for d in ds}
+
+        def needs_splitting(token: str, delimiters: tuple[str, ...]) -> bool:
+            # Check if the delimiter is (part of) the token (e.g. \n\n is part of \n\n\n)
+            for delim in delimiters:
+                if delim in token:
+                    delimiter_not_used.discard(delim)
+                    return True
+            return False
+
         tree: dict[tuple[int, int], list[EndPoint]] = defaultdict(list)
         last_layer = [slice(1, len(tokens))]
         # Depth by depth in the tree
@@ -457,8 +467,7 @@ class SplitStrategy(Strategy):
             for parent in last_layer:
                 child_start = parent.start
                 for child_end, token in enumerate(tokens[parent], start=parent.start):
-                    # Check if the delimiter is (part of) the token (e.g. \n\n is part of \n\n\n)
-                    if any(d in token for d in delimiters):
+                    if needs_splitting(token, delimiters):
                         new_child(parent, child_start, child_end)
                         child_start = child_end + 1
                 # We include the last slice, if it's not empty
@@ -476,6 +485,10 @@ class SplitStrategy(Strategy):
                     tree[parent.start, parent.stop] = [
                         slice(t, t + 1) for t in range(parent.start, parent.stop)
                     ]
+
+        # Warn if some delimiters were not used
+        if delimiter_not_used:
+            warnings.warn(f"The following delimiters were not used: {delimiter_not_used}.")
 
         return tree
 
