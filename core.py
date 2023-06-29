@@ -93,6 +93,9 @@ class Intervention(abc.ABC):
         )]):
             yield
 
+    def __repr__(self):
+        return self.__class__.__name__ + "()"
+
 
 class DampenIntervention(Intervention):
     filter_hook_name = 'pattern'
@@ -108,6 +111,9 @@ class DampenIntervention(Intervention):
         target: Union[int, slice],
     ):
         activation[:, :, target, source] *= self.dampening_factor
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.dampening_factor})"
 
 
 class ZeroPattern(DampenIntervention):
@@ -132,6 +138,8 @@ class BaseCorruptIntervention(Intervention):
 
         self.clean_cache = model.run_with_cache(
             clean_input, names_filter=lambda name: name.endswith("resid_pre"))[1]
+    def __repr__(self):
+        return f"<{self.__class__.__name__}({self.clean_input})>"
 
     def corrupt_source(self, activation: Float[Tensor, "batch seq head d_head"],
                        hook: HookPoint, source: int, target: int):
@@ -200,6 +208,9 @@ class CorruptIntervention(BaseCorruptIntervention):
             names_filter=lambda name: name.endswith(("k", "v")),
             remove_batch_dim=True,
         )[1]  # Ignore the logits
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__}({self.clean_input} -> {self.corrupt_input})>"
 
     def corrupt_source(self, activation: Float[Tensor, "batch seq head d_head"],
                        hook: HookPoint, source: int, target: int):
@@ -701,8 +712,7 @@ def plot_graphviz_connectome(
 
 
 
-def plot_attn_connectome(model: HookedTransformer, prompt: str,
-                         connectome: List[Connexion], **plotly_kwargs):
+def attn_connectome(model: HookedTransformer, prompt: str, connectome: List[Connexion], fill=float('nan')) -> Float[Tensor, "n_tokens n_tokens"]:
     tokens = model.to_str_tokens(prompt)
     n_tokens = len(tokens)
     # Maybe we want to sort the connexions by size of patch?
@@ -712,8 +722,13 @@ def plot_attn_connectome(model: HookedTransformer, prompt: str,
 
     triu = torch.triu(torch.ones(n_tokens, n_tokens, dtype=torch.bool),
                       diagonal=1)
-    connexions.masked_fill_(triu, float("nan"))
+    connexions.masked_fill_(triu, fill)
+    return connexions
 
+def plot_attn_connectome(model: HookedTransformer, prompt: str,
+                         connectome: List[Connexion], **plotly_kwargs):
+    connexions = attn_connectome(model, prompt, connectome)
+    tokens = model.to_str_tokens(prompt)
     labels = [f"{i}: {token!r}" for i, token in enumerate(tokens)]
     return px.imshow(
         connexions,
