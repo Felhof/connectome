@@ -413,7 +413,7 @@ class SplitStrategy(Strategy):
 
     DEFAULT_SPLITS = (
         '\n\n',
-        # '\n',
+        '\n',
         tuple('.!?'),
         tuple(',:;'),
     )
