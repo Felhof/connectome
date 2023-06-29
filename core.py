@@ -419,7 +419,7 @@ class SplitStrategy(Strategy):
     )
 
     def __init__(self, model: HookedTransformer, prompt: str, threshold: float,
-                 delimiters: Iterable[Union[str, tuple[str, ...]], ...] = DEFAULT_SPLITS,
+                 delimiters: Iterable[Union[str, tuple[str, ...]]] = DEFAULT_SPLITS,
                  tokens_as_leaves=True):
         super().__init__()
         self.model = model
