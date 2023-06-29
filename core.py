@@ -670,6 +670,8 @@ def graphviz_connectome(
     # Add all the important connexions to the graph
     min_strength = min(abs(connexion.strength) for connexion in connectome)
     max_strength = max(abs(connexion.strength) for connexion in connectome)
+    if min_strength == max_strength:
+        min_strength = 0
     for connexion in connectome:
         graph.edge(
             str(connexion.source_tuple),
