@@ -61,9 +61,8 @@ class Intervention(abc.ABC):
         assert isinstance(source, (int, slice))
         assert isinstance(target, (int, slice))
 
-        with model.hooks(fwd_hooks=[(
-                self.filter,
-                partial(self.hook, source=source, target=target))]):
+        with model.hooks(fwd_hooks=[(self.filter,
+                                     partial(self.hook, source=source, target=target))]):
             yield
 
     def batch_hook(
@@ -98,7 +97,7 @@ class Intervention(abc.ABC):
 
 
 class DampenIntervention(Intervention):
-    filter_hook_name = 'pattern'
+    filter_hook_name = "pattern"
 
     def __init__(self, dampening_factor: float):
         self.dampening_factor = dampening_factor
@@ -125,8 +124,9 @@ class ZeroPattern(DampenIntervention):
 class StopComputation(Exception):
     pass
 
+
 class BaseCorruptIntervention(Intervention):
-    filter_hook_name = 'z'
+    filter_hook_name = "z"
 
     def __init__(self, model: HookedTransformer, clean_input: str):
         if not model.cfg.use_split_qkv_input:
@@ -138,19 +138,25 @@ class BaseCorruptIntervention(Intervention):
 
         self.clean_cache = model.run_with_cache(
             clean_input, names_filter=lambda name: name.endswith("resid_pre"))[1]
+
     def __repr__(self):
         return f"<{self.__class__.__name__}({self.clean_input})>"
 
-    def corrupt_source(self, activation: Float[Tensor, "batch seq head d_head"],
-                       hook: HookPoint, source: int, target: int):
+    def corrupt_source(
+            self,
+            activation: Float[Tensor, "batch seq head d_head"],
+            hook: HookPoint,
+            source: int,
+            target: int,
+    ):
         raise NotImplementedError
 
     def hook(
-        self,
-        main_activation: Float[Tensor, "batch seq head d_head"],
-        hook: HookPoint,
-        source: Union[int, slice],
-        target: Union[int, slice],
+            self,
+            main_activation: Float[Tensor, "batch seq head d_head"],
+            hook: HookPoint,
+            source: Union[int, slice],
+            target: Union[int, slice],
     ):
         # This is not so great. We avoid recursively calling this function
         # removing all the hooks. And we don't add them back afterward.
@@ -159,18 +165,18 @@ class BaseCorruptIntervention(Intervention):
         # Step 1: compute the attention score between clean query and corrupted key
         layer = hook.layer()
 
-        def store_score(activation: Float[Tensor,
-                                          "batch head seq_query seq_key"],
-                        hook: HookPoint):
+        def store_score(activation: Float[Tensor, "batch head seq_query seq_key"], hook: HookPoint):
             hook.ctx["score"] = activation[:, :, target, source]
             raise StopComputation()
 
         with self.model.hooks(fwd_hooks=[
-            (get_act_name("k", layer), partial(self.corrupt_source, source=source, target=target)),
+            (
+                    get_act_name("k", layer),
+                    partial(self.corrupt_source, source=source, target=target),
+            ),
             (get_act_name("attn_scores", layer), store_score),
         ]):
-            clean_resid_pre = self.clean_cache[get_act_name(
-                "resid_pre", layer)]
+            clean_resid_pre = self.clean_cache[get_act_name("resid_pre", layer)]
             try:
                 self.model.blocks[layer](clean_resid_pre)
             except StopComputation:
@@ -178,18 +184,19 @@ class BaseCorruptIntervention(Intervention):
 
         # Step 2: compute the new z
 
-        def corrupt_score(activation: Float[Tensor,
-                                            "batch head seq_query seq_key"],
+        def corrupt_score(activation: Float[Tensor, "batch head seq_query seq_key"],
                           hook: HookPoint):
             activation[:, :, target, source] = hook.ctx.pop("score")
 
-        def hook_z(activation: Float[Tensor, "batch seq head d_head"],
-                   hook: HookPoint):
+        def hook_z(activation: Float[Tensor, "batch seq head d_head"], hook: HookPoint):
             main_activation[:, target] = activation[:, target]
             raise StopComputation()
 
         with self.model.hooks(fwd_hooks=[
-            (get_act_name("v", layer), partial(self.corrupt_source, source=source, target=target)),
+            (
+                    get_act_name("v", layer),
+                    partial(self.corrupt_source, source=source, target=target),
+            ),
             (get_act_name("attn_scores", layer), corrupt_score),
             (get_act_name("z", layer), hook_z),
         ]):
@@ -198,9 +205,11 @@ class BaseCorruptIntervention(Intervention):
             except StopComputation:
                 pass
 
+
 class CorruptIntervention(BaseCorruptIntervention):
+
     def __init__(self, model: HookedTransformer, clean_input: str, corrupt_input: str):
-        assert len(model.to_tokens(clean_input)) == len( model.to_tokens(corrupt_input))
+        assert len(model.to_tokens(clean_input)) == len(model.to_tokens(corrupt_input))
         super().__init__(model, clean_input)
         self.corrupt_input = corrupt_input
         self.corrupt_cache = model.run_with_cache(
@@ -210,16 +219,27 @@ class CorruptIntervention(BaseCorruptIntervention):
         )[1]  # Ignore the logits
 
     def __repr__(self):
-        return f"<{self.__class__.__name__}({self.clean_input} -> {self.corrupt_input})>"
+        return (f"<{self.__class__.__name__}({self.clean_input} -> {self.corrupt_input})>")
 
-    def corrupt_source(self, activation: Float[Tensor, "batch seq head d_head"],
-                       hook: HookPoint, source: int, target: int):
+    def corrupt_source(
+            self,
+            activation: Float[Tensor, "batch seq head d_head"],
+            hook: HookPoint,
+            source: int,
+            target: int,
+    ):
         activation[:, source] = self.corrupt_cache[hook.name][source]
+
 
 class CropIntervention(BaseCorruptIntervention):
 
-    def corrupt_source(self, activation: Float[Tensor, "batch seq head d_head"], hook: HookPoint, source: int,
-                       target: int):
+    def corrupt_source(
+            self,
+            activation: Float[Tensor, "batch seq head d_head"],
+            hook: HookPoint,
+            source: int,
+            target: int,
+    ):
         assert isinstance(source, int), "source must be int for crop intervention"
         activation[:, source] = self.corrupt_caches[source][hook.name][min(source, 1)]
 
@@ -230,25 +250,22 @@ class CropIntervention(BaseCorruptIntervention):
         bos_token = clean_tokens[0]
         self.corrupt_caches = [
             model.run_with_cache(
-                torch.tensor([bos_token] +
-                             clean_tokens[max(1, start):]),
-                names_filter=lambda n: n.endswith(("v", 'k')),
+                torch.tensor([bos_token] + clean_tokens[max(1, start):]),
+                names_filter=lambda n: n.endswith(("v", "k")),
                 remove_batch_dim=True,
             )[1] for start in range(len(clean_tokens))
         ]
+
 
 # Metrics
 
 
 def logit_diff_metric(model: HookedTransformer, correct: str, *incorrect: str) -> Metric:
     correct_param_id = model.to_single_token(correct)
-    incorrect_param_ids = [
-        model.to_single_token(incorrect) for incorrect in incorrect
-    ]
+    incorrect_param_ids = [model.to_single_token(incorrect) for incorrect in incorrect]
 
-    def metric(
-        logits: Float[Tensor, "seq vocab"],
-    ) -> float:
+    def metric(logits: Float[Tensor, "seq vocab"], ) -> float:
+        assert logits.ndim == 2
         incorrect_logit = logits[-1, incorrect_param_ids].max()
         correct_logit = logits[-1, correct_param_id]
         return correct_logit - incorrect_logit
@@ -275,10 +292,8 @@ class Strategy:
         Override this method to initialize the exploration."""
         raise NotImplementedError
 
-    def pop_explorations(
-            self,
-            max_explorations: Optional[int] = None
-    ) -> list[tuple[EndPoint, EndPoint]]:
+    def pop_explorations(self,
+                         max_explorations: Optional[int] = None) -> list[tuple[EndPoint, EndPoint]]:
         """Get the next explorations to do.
 
         If `max_explorations` is not specified, all explorations are returned, otherwise at most `max_explorations` are returned.
@@ -307,10 +322,10 @@ class Strategy:
             raise StopIteration
         return self.to_explore.pop()
 
-    def report(self, source: Union[int, slice], target: Union[int, slice],
-               strength: float):
+    def report(self, source: Union[int, slice], target: Union[int, slice], strength: float):
         """Called when the results of an intervention are available.
-        Override to generate new things to explore based on the results of the intervention."""
+        Override to generate new things to explore based on the results of the intervention.
+        """
         pass
 
     def __str__(self):
@@ -348,15 +363,19 @@ class BisectStrategy(Strategy):
             source_parts = [source]
         else:
             source_mid = math.ceil((source.start + source.stop) / 2)
-            source_parts = [slice(source.start, source_mid),
-                            slice(source_mid, source.stop)]
+            source_parts = [
+                slice(source.start, source_mid),
+                slice(source_mid, source.stop),
+            ]
 
         if target.stop - target.start == 1:
             target_parts = [target]
         else:
             target_mid = math.ceil((target.start + target.stop) / 2)
-            target_parts = [slice(target.start, target_mid),
-                            slice(target_mid, target.stop)]
+            target_parts = [
+                slice(target.start, target_mid),
+                slice(target_mid, target.stop),
+            ]
 
         # If we can't bisect anymore, because it's a single token
         if len(source_parts) == 1 and len(target_parts) == 1:
@@ -365,6 +384,7 @@ class BisectStrategy(Strategy):
         for source_part in source_parts:
             for target_part in target_parts:
                 self.explore_next(source_part, target_part)
+
 
 class BacktrackingStrategy(Strategy):
 
@@ -425,19 +445,24 @@ class BacktrackBisectStrategy(Strategy):
 
 class SplitStrategy(Strategy):
     """A strategy that groups tokens into clusters and explores the connections between clusters
-    before exploring the connections inside clusters. """
+    before exploring the connections inside clusters."""
 
     DEFAULT_SPLITS = (
-        '\n\n',
-        '\n',
-        tuple('.!?'),
-        tuple(',:;'),
+        "\n\n",
+        "\n",
+        tuple(".!?"),
+        tuple(",:;"),
     )
 
-    def __init__(self, model: HookedTransformer, prompt: str, threshold: float,
-                 delimiters: Iterable[Union[str, tuple[str, ...]]] = DEFAULT_SPLITS,
-                 tokens_as_leaves=True,
-                 delimiters_as_leaves=False):
+    def __init__(
+            self,
+            model: HookedTransformer,
+            prompt: str,
+            threshold: float,
+            delimiters: Iterable[Union[str, tuple[str, ...]]] = DEFAULT_SPLITS,
+            tokens_as_leaves=True,
+            delimiters_as_leaves=False,
+    ):
         super().__init__()
         self.model = model
         self.prompt = prompt
@@ -445,17 +470,20 @@ class SplitStrategy(Strategy):
         self.tokens_as_leaves = tokens_as_leaves
         self.delimiters_as_leaves = delimiters_as_leaves
         # Make all delimiters tuples
-        self.delimiters: list[tuple[str, ...]] = [(delimiter,) if isinstance(delimiter, str) else delimiter
-                                                  for delimiter in delimiters]
+        self.delimiters: list[tuple[str, ...]] = [
+            (delimiter,) if isinstance(delimiter, str) else delimiter for delimiter in delimiters
+        ]
         # every delimiter should be a token
         for delimiters in self.delimiters:
             for delimiter in delimiters:
                 tokens = self.model.to_str_tokens(delimiter, prepend_bos=False)
-                assert len(tokens) == 1, f"Delimiter {delimiter} is not a single token but {tokens}."
+                assert (
+                        len(tokens) == 1), f"Delimiter {delimiter} is not a single token but {tokens}."
 
         self.tree: dict[tuple[int, int], list[EndPoint]] = self.build_tree(model, prompt)
 
-    def build_tree(self, model: HookedTransformer, prompt: str) -> dict[tuple[int, int], list[EndPoint]]:
+    def build_tree(self, model: HookedTransformer,
+                   prompt: str) -> dict[tuple[int, int], list[EndPoint]]:
         tokens = model.to_str_tokens(prompt)
 
         def new_child(parent: slice, child_start: int, child_end: int):
@@ -507,9 +535,8 @@ class SplitStrategy(Strategy):
             for parent in last_layer:
                 # Slices of length one are already in the tree
                 if parent.stop != parent.start + 1:
-                    tree[parent.start, parent.stop] = [
-                        slice(t, t + 1) for t in range(parent.start, parent.stop)
-                    ]
+                    tree[parent.start,
+                    parent.stop] = [slice(t, t + 1) for t in range(parent.start, parent.stop)]
 
         # Warn if some delimiters were not used
         if delimiter_not_used:
@@ -522,8 +549,7 @@ class SplitStrategy(Strategy):
         all_tokens = slice(1, n_tokens)
         self.to_explore = [(all_tokens, all_tokens)]
 
-    def report(self, source: Union[int, slice], target: Union[int, slice],
-               strength: float):
+    def report(self, source: Union[int, slice], target: Union[int, slice], strength: float):
         if abs(strength) < self.threshold:
             return
 
@@ -559,8 +585,7 @@ class SplitStrategy(Strategy):
                     child_positions.append(positions[target])
             assert sorted(child_positions) == positions[source[0]:source[1]], (
                 f"Child positions {child_positions} do not match parent positions "
-                f"{positions[source[0]:source[1]]}"
-            )
+                f"{positions[source[0]:source[1]]}")
 
 
 @torch.inference_mode()
@@ -604,8 +629,7 @@ def connectom(
             performance = (strength - baseline_strength) / baseline_strength
 
             strategy.report(source, target, performance)
-            connections.append(
-                Connexion(source, target, performance, "All layers"))
+            connections.append(Connexion(source, target, performance, "All layers"))
 
     return connections
 
@@ -626,12 +650,10 @@ def filter_connectome(
 
     if depth is None:
         kept = [
-            connexion
-            for connexion in connectome
-            if abs(connexion.strength) >= threshold
-               and connexion.is_single_pair
+            connexion for connexion in connectome
+            if abs(connexion.strength) >= threshold and connexion.is_single_pair
         ]
-        kept = sorted(kept, key=lambda c: c.strength, reverse=True)[:top_k]
+        kept = sorted(kept, key=lambda c: abs(c.strength), reverse=True)[:top_k]
         return kept
 
     # Sort the connections, biggest area first
@@ -650,6 +672,7 @@ def filter_connectome(
         tree[connexion] = []
 
     kept = []
+
     def recurse(connexion: Connexion, depth: int):
         if depth == 0:
             kept.append(connexion)
@@ -696,7 +719,7 @@ def graphviz_connectome(
         else:
             pos = f"{endpoint[0]}:{endpoint[1]}"
 
-        text = ''.join(tokens[endpoint[0]:endpoint[1]])
+        text = "".join(tokens[endpoint[0]:endpoint[1]])
         text = repr(text)
         # Shorten the text if it's too long
         if len(text) > 30:
@@ -715,10 +738,7 @@ def graphviz_connectome(
             str(connexion.target_tuple),
             label=f"{connexion.strength:.2f}",
             color="#87D37C" if connexion.strength < 0 else "#E52B50",
-            penwidth=str(
-                int(
-                    map_range(abs(connexion.strength), min_strength,
-                              max_strength, 1, 7))),
+            penwidth=str(int(map_range(abs(connexion.strength), min_strength, max_strength, 1, 7))),
         )
 
     return graph
@@ -750,8 +770,12 @@ def plot_graphviz_connectome(
     return graph
 
 
-
-def attn_connectome(model: HookedTransformer, prompt: str, connectome: List[Connexion], fill=float('nan')) -> Float[Tensor, "n_tokens n_tokens"]:
+def attn_connectome(
+        model: HookedTransformer,
+        prompt: str,
+        connectome: List[Connexion],
+        fill=float("nan"),
+) -> Float[Tensor, "n_tokens n_tokens"]:
     tokens = model.to_str_tokens(prompt)
     n_tokens = len(tokens)
     # Maybe we want to sort the connexions by size of patch?
@@ -759,13 +783,13 @@ def attn_connectome(model: HookedTransformer, prompt: str, connectome: List[Conn
     for connexion in sorted(connectome, key=lambda c: c.area, reverse=True):
         connexions[connexion.target, connexion.source] = connexion.strength
 
-    triu = torch.triu(torch.ones(n_tokens, n_tokens, dtype=torch.bool),
-                      diagonal=1)
+    triu = torch.triu(torch.ones(n_tokens, n_tokens, dtype=torch.bool), diagonal=1)
     connexions.masked_fill_(triu, fill)
     return connexions
 
-def plot_attn_connectome(model: HookedTransformer, prompt: str,
-                         connectome: List[Connexion], **plotly_kwargs):
+
+def plot_attn_connectome(model: HookedTransformer, prompt: str, connectome: List[Connexion],
+                         **plotly_kwargs):
     connexions = attn_connectome(model, prompt, connectome)
     tokens = model.to_str_tokens(prompt)
     labels = [f"{i}: {token!r}" for i, token in enumerate(tokens)]
@@ -781,8 +805,50 @@ def plot_attn_connectome(model: HookedTransformer, prompt: str,
     )
 
 
-def map_range(value: float, min_value: float, max_value: float,
-              min_range: float, max_range: float) -> float:
+def map_range(value: float, min_value: float, max_value: float, min_range: float,
+              max_range: float) -> float:
     """Map a value from a range to another"""
     normalized = (value - min_value) / (max_value - min_value)
     return min_range + normalized * (max_range - min_range)
+
+
+# Validation
+
+
+@torch.inference_mode()
+def cut_connectome(
+        model: HookedTransformer,
+        prompt: str,
+        metric: Metric,
+        connectome: list[Connexion],
+        threshold: float = 0.0,
+        keep_bos: bool = True,
+        dampen_weak: float = 0.0,
+):
+    original_logits = model(prompt)[0]
+    baseline = metric(original_logits)
+
+    n_tokens = len(model.to_str_tokens(prompt))
+    mask = torch.zeros((n_tokens, n_tokens)) + dampen_weak
+    if keep_bos:
+        mask[:, 0] = 1
+    for connexion in connectome:
+        if abs(connexion.strength) >= threshold:
+            mask[connexion.target, connexion.source] = 1
+
+    def hook(activation: Float[Tensor, "batch=1 n_head seq_query seq_key"], hook: HookPoint):
+        activation *= mask
+
+    logits = model.run_with_hooks(prompt, fwd_hooks=[(lambda name: name.endswith("pattern"), hook)])
+
+    cut_value = metric(logits[0])
+    strength_kept = float(cut_value / baseline)
+
+    print("Model:", model.cfg.model_name)
+    print("Prompt:", prompt)
+    print(f"Cutting everything but {int(mask.sum())} connections")
+    print(f"Baseline: {baseline:.3f}")
+    print(f"Cut value: {cut_value:.3f}")
+    print(f"Strength kept: {strength_kept:.3f}")
+
+    return strength_kept
