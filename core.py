@@ -264,7 +264,7 @@ def logit_diff_metric(model: HookedTransformer, correct: str, *incorrect: str) -
     correct_param_id = model.to_single_token(correct)
     incorrect_param_ids = [model.to_single_token(incorrect) for incorrect in incorrect]
 
-    def metric(logits: Float[Tensor, "seq vocab"], ) -> float:
+    def metric(logits: Float[Tensor, "seq vocab"] ) -> float:
         assert logits.ndim == 2
         incorrect_logit = logits[-1, incorrect_param_ids].max()
         correct_logit = logits[-1, correct_param_id]
@@ -272,6 +272,19 @@ def logit_diff_metric(model: HookedTransformer, correct: str, *incorrect: str) -
 
     return metric
 
+def correct_token_metric(model: HookedTransformer, correct: str) -> Metric:
+    correct_token_id = model.to_single_token(correct)
+    def metric(logits: Float[Tensor, "seq vocab"] ) -> float:
+        assert logits.ndim == 2
+        correct_token_logit = logits[-1, correct_token_id]
+        top = logits[-1].topk(2)
+        if top.indices[0] == correct_token_id:
+            alt_logit = top.values[1]
+        else:
+            alt_logit = top.values[0]
+        return correct_token_logit - alt_logit
+
+    return metric
 
 # Exploration strategies
 
