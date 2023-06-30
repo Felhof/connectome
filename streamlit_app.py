@@ -1,9 +1,6 @@
-from functools import partial
-
+import core
 import streamlit as st
 from transformer_lens import HookedTransformer
-
-import core
 
 st.title("Connectome Visualizer")
 
@@ -22,8 +19,7 @@ def load_model(name: str):
 model_name = st.radio("Model", ["gpt2", "attn-only-4l"], horizontal=True)
 model = load_model(model_name)
 
-prompt = st.text_input(
-    "Prompt", "When Mary and John went to the store, John gave a drink to")
+prompt = st.text_input("Prompt", "When Mary and John went to the store, John gave a drink to")
 
 
 def select_token(label: str, default: str) -> str:
@@ -49,7 +45,7 @@ with col2:
 @st.cache_data
 def get_connectome(prompt, correct_token, incorrect_token, model_name):
     model = load_model(model_name)  # To invalidate cache if model changes
-    return core.connectom(
+    return core.connectome(
         model,
         prompt,
         core.logit_diff_metric(model, correct_token, incorrect_token),
@@ -64,10 +60,7 @@ tab_graphviz, tab_attention = st.tabs(["Graphviz", "Attention"])
 
 with tab_graphviz:
     threshold = st.slider("Threshold", 0.1, 1.0, 0.2)
-    graph = core.plot_graphviz_connectome(model,
-                                          prompt,
-                                          connectome,
-                                          threshold=threshold)
+    graph = core.plot_graphviz_connectome(model, prompt, connectome, threshold=threshold)
 
     st.graphviz_chart(graph)
 

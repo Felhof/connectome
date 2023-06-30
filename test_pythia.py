@@ -1,10 +1,9 @@
 # %%
-from transformer_lens import HookedTransformer
 import torch
-from IPython.display import Image, SVG
 import transformer_lens
+from transformer_lens import HookedTransformer
 
-import core
+import connectome as core
 
 %load_ext autoreload
 %autoreload 2
@@ -171,29 +170,20 @@ name = C([Point(0, 0), Point(1, 0), Point(0, 1)])
 print(calculate_circumference("""
 
 # %%
-transformer_lens.utils.test_prompt(CODE2, 'bar', pythia)
+transformer_lens.utils.test_prompt(CODE2, "bar", pythia)
 # %%
 logits = pythia(CODE2)
-predictions = torch.topk(logits[0,-1], 20)
+predictions = torch.topk(logits[0, -1], 20)
 pythia.to_str_tokens(predictions.indices)
 # %%
 threshold = 0.1
-c = core.connectom(pythia, CODE2,
-        core.logit_diff_metric(pythia, 'bar', 'foo','name'),
-        core.ZeroPattern(),
-        core.BisectStrategy(0.1),
-        # core.BacktrackingStrategy(threshold),
-        # core.SplitStrategy(
-        #     pythia, 
-        #     CODE2, 
-        #     threshold, 
-        #     delimiters=(
-        #         '\n',
-        #         tuple('.!?'),
-        #         tuple(',:;'),
-        #     ),  
-        # tokens_as_leaves=False),
-        max_batch_size=10
+c = core.connectome(
+    pythia,
+    CODE2,
+    core.logit_diff_metric(pythia, "bar", "foo", "name"),
+    core.ZeroPattern(),
+    core.BisectStrategy(0.1),
+    max_batch_size=10,
 )
 # %%
 # graph = core.plot_graphviz_connectome(pythia, CODE2, c, threshold=threshold).pipe('svg').decode('utf-8')
@@ -205,19 +195,23 @@ core.plot_graphviz_connectome(pythia, CODE2, c, threshold=0.5)
 core.plot_attn_connectome(pythia, CODE, c).show()
 # %%
 import plotly.express as px
+
 # %%
 _, cache = pythia.run_with_cache(CODE2, names_filter=lambda n: n.endswith("pattern"))
-avg_attention = torch.stack([
-    cache['pattern', layer][0]  # remove batch dim
-    for layer in range(pythia.cfg.n_layers)
-]).max(dim=0).values.max(dim=0).values  # max over heads and layer
+avg_attention = (
+    torch.stack([
+        cache["pattern", layer][0]  # remove batch dim
+        for layer in range(pythia.cfg.n_layers)
+    ]).max(dim=0).values.max(dim=0).values)  # max over heads and layer
 
 labels = pythia.to_str_tokens(CODE2)
 labels = [f"{i}: {label!r}" for i, label in enumerate(labels)]
-px.imshow(avg_attention.cpu(),
-            x=labels,
-            y=labels,
-            color_continuous_scale="Blues",
-            title="Max attention on Pythia Code Completion",
-            height=3000).show()
-#%%
+px.imshow(
+    avg_attention.cpu(),
+    x=labels,
+    y=labels,
+    color_continuous_scale="Blues",
+    title="Max attention on Pythia Code Completion",
+    height=3000,
+).show()
+# %%

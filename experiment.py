@@ -19,15 +19,9 @@ prompt = "When Mary and John went to the store, John gave a drink to"
 # %%
 s_token_id = model.to_single_token(" John")
 io_token_id = model.to_single_token(" Mary")
-results = layer_level_connectom(model,
-                                prompt,
-                                ioi_metric(s_token_id, io_token_id),
-                                threshold=0.75)
+results = layer_level_connectom(model, prompt, ioi_metric(s_token_id, io_token_id), threshold=0.75)
 # %%
-results = layer_level_connectom(model,
-                                prompt,
-                                kl_on_last_token,
-                                threshold=0.05)
+results = layer_level_connectom(model, prompt, kl_on_last_token, threshold=0.05)
 # %%
 sankey_diagram_of_connectome(model, prompt, results)
 # %%
@@ -62,10 +56,7 @@ def get_model_completions(prompt):
 
 
 # %%
-docstring_results = layer_level_connectom(model,
-                                          docstring_prompt1,
-                                          kl_on_last_token,
-                                          threshold=0.2)
+docstring_results = layer_level_connectom(model, docstring_prompt1, kl_on_last_token, threshold=0.2)
 
 
 # %%
@@ -77,9 +68,7 @@ def map_connectome_for_docstring_task(
     threshold=1.0,
 ):
     correct_param_id = int(model.to_single_token(correct_param))
-    incorrect_param_ids = [
-        int(model.to_single_token(token)) for token in incorrect_param
-    ]
+    incorrect_param_ids = [int(model.to_single_token(token)) for token in incorrect_param]
     docstring_results = layer_level_connectom(
         model,
         prompt,

@@ -4,12 +4,11 @@ from functools import partial
 from itertools import chain, combinations
 from typing import Callable, List, Optional, Tuple, Any, Union
 
-from circuitsvis.attention import attention_pattern
-from jaxtyping import Float
 import plotly.graph_objects as go
 import torch
+from jaxtyping import Float
 from torch import Tensor
-from tqdm.autonotebook import trange, tqdm
+from tqdm.autonotebook import tqdm
 from transformer_lens import utils, HookedTransformer
 
 
@@ -18,8 +17,7 @@ def block_attention(activation, hook, source: int, target: int) -> None:
     activation[:, :, target, source] = float("-inf")
 
 
-def block_attention_for_head(activation, hook, head: int, source: int,
-                             target: int) -> None:
+def block_attention_for_head(activation, hook, head: int, source: int, target: int) -> None:
     activation[:, head, target, source] = float("-inf")
 
 
@@ -28,46 +26,6 @@ def block_score(activation, hook, source: int, target: int) -> None:
 
 
 # %%
-@torch.inference_mode()
-def connectom(
-    model: HookedTransformer,
-    prompt: str,
-    metric: Callable[[Float[Tensor, "seq vocab"], Float[Tensor, "seq vocab"]],
-                     float],
-    show=False,
-) -> Tensor:
-    tokens = model.to_str_tokens(prompt)
-    n_tokens = len(tokens)
-
-    original_predictions = model(prompt)[0]
-
-    connections = torch.full((n_tokens, n_tokens), float("nan"))
-    for target in trange(1, n_tokens):
-        for source in range(1, target + 1):
-            logits = model.run_with_hooks(
-                prompt,
-                fwd_hooks=[
-                    (
-                        # lambda name: name.endswith("attn_scores"),
-                        # partial(block_attention, source=source, target=target),
-                        lambda name: name.endswith("pattern"),
-                        partial(block_score, source=source, target=target),
-                        # partial(patch_in_avg_attn, source=source, target=target),
-                    ),
-                    # (
-                    #     lambda name: name.endswith("hook_v"),
-                    #     partial(patch_in_avg_v, target=target)
-                    # )
-                ],
-            )[0]
-            c = metric(original_predictions, logits)
-            connections[target, source] = c
-
-    return connections
-
-
-# %%
-### TOOL B
 
 
 def powerset(iterable, min_size: int = 1, max_size: Optional[int] = None):
@@ -81,33 +39,27 @@ def powerset(iterable, min_size: int = 1, max_size: Optional[int] = None):
         max_size = len(iterable)
 
     s = list(iterable)
-    return chain.from_iterable(
-        combinations(s, r) for r in range(min_size, max_size + 1))
+    return chain.from_iterable(combinations(s, r) for r in range(min_size, max_size + 1))
 
 
 @torch.inference_mode()
 def layer_level_connectom(
-    model: HookedTransformer,
-    prompt: str,
-    metric: Callable[[Float[Tensor, "seq vocab"], Float[Tensor, "seq vocab"]],
-                     float],
-    threshold: float = 0.55,
+        model: HookedTransformer,
+        prompt: str,
+        metric: Callable[[Float[Tensor, "seq vocab"], Float[Tensor, "seq vocab"]], float],
+        threshold: float = 0.55,
 ) -> List:
     original_predictions = model(prompt)[0]
     str_tokens = model.to_str_tokens(prompt)
     connections = connectom(model, prompt, metric, show=False)
-    important_connections = (torch.abs(connections)
-                             > threshold).nonzero().tolist()
-    layer_powerset = list(
-        powerset(range(model.cfg.n_layers), min_size=1, max_size=4))
+    important_connections = (torch.abs(connections) > threshold).nonzero().tolist()
+    layer_powerset = list(powerset(range(model.cfg.n_layers), min_size=1, max_size=4))
 
     results = []
 
     for target, source in tqdm(important_connections):
         done = []
-        for layers in tqdm(layer_powerset,
-                           leave=False,
-                           desc=f"{source} -> {target}"):
+        for layers in tqdm(layer_powerset, leave=False, desc=f"{source} -> {target}"):
             if any(d <= set(layers) for d in done):
                 continue
             logits = model.run_with_hooks(
@@ -157,44 +109,6 @@ def kl_on_last_token(
     ).item()
 
 
-def ioi_metric(s_token_idx: int, io_token_idx: int) -> Callable[..., float]:
-
-    def metric(
-        original_logits: Float[Tensor, "seq vocab"],
-        patched_logits: Float[Tensor, "seq vocab"],
-    ) -> float:
-        baseline = original_logits[-1,
-                                   io_token_idx] - original_logits[-1,
-                                                                   s_token_idx]
-        logit_diff = patched_logits[-1,
-                                    io_token_idx] - patched_logits[-1,
-                                                                   s_token_idx]
-        return (logit_diff - baseline).item()
-
-    return metric
-
-
-def docstring_metric(correct_param_id: int,
-                     incorrect_param_ids: List[int]) -> Callable[..., float]:
-
-    def metric(
-        original_logits: Float[Tensor, "seq vocab"],
-        patched_logits: Float[Tensor, "seq vocab"],
-    ) -> float:
-        original_incorrect_logit = max(
-            original_logits[-1, incorrect_param_id].item()
-            for incorrect_param_id in incorrect_param_ids)
-        baseline = original_logits[-1,
-                                   correct_param_id] - original_incorrect_logit
-        patched_incorrect_logit = max(
-            patched_logits[-1, incorrect_param_id].item()
-            for incorrect_param_id in incorrect_param_ids)
-        logit_diff = patched_logits[-1,
-                                    correct_param_id] - patched_incorrect_logit
-        return (logit_diff - baseline).item()
-
-    return metric
-
 
 def coerce_int(value: Union[int, slice]) -> Optional[int]:
     if isinstance(value, int):
@@ -210,6 +124,7 @@ def endpoint_to_start_end(endpoint: Union[int, slice]) -> Tuple[int, int]:
         return endpoint, endpoint + 1
     else:
         return endpoint.start, endpoint.stop
+
 
 @dataclass
 class Connexion:
@@ -238,8 +153,8 @@ class Connexion:
 
     @property
     def area(self) -> int:
-        source_size = 1 if isinstance(self.source, int) else self.source.stop - self.source.start
-        target_size = 1 if isinstance(self.target, int) else self.target.stop - self.target.start
+        source_size = (1 if isinstance(self.source, int) else self.source.stop - self.source.start)
+        target_size = (1 if isinstance(self.target, int) else self.target.stop - self.target.start)
         return source_size * target_size
 
     @property
@@ -255,20 +170,23 @@ class Connexion:
         target_start, target_end = self.target_tuple
         other_source_start, other_source_end = other.source_tuple
         other_target_start, other_target_end = other.target_tuple
-        return (
-            other_source_start <= source_start <= source_end <= other_source_end
-            and other_target_start <= target_start <= target_end <= other_target_end
-        )
+        return (other_source_start <= source_start <= source_end <= other_source_end
+                and other_target_start <= target_start <= target_end <= other_target_end)
 
     def __hash__(self):
-        source = self.source if isinstance(self.source, int) else (self.source.start, self.source.stop)
-        target = self.target if isinstance(self.target, int) else (self.target.start, self.target.stop)
+        source = (self.source if isinstance(self.source, int) else
+                  (self.source.start, self.source.stop))
+        target = (self.target if isinstance(self.target, int) else
+                  (self.target.start, self.target.stop))
         return hash((source, target, self.strength, self.note))
 
     def __repr__(self) -> str:
-        source = self.source if isinstance(self.source, int) else f"{self.source.start}:{self.source.stop}"
-        target = self.target if isinstance(self.target, int) else f"{self.target.start}:{self.target.stop}"
+        source = (self.source
+                  if isinstance(self.source, int) else f"{self.source.start}:{self.source.stop}")
+        target = (self.target
+                  if isinstance(self.target, int) else f"{self.target.start}:{self.target.stop}")
         return f"<Connexion({source} -> {target}: {self.strength:.2f})>"
+
 
 def sankey_diagram_of_connectome(
     model: HookedTransformer,
@@ -278,8 +196,7 @@ def sankey_diagram_of_connectome(
     show: bool = True,
 ):
     node_labels = [
-        f"{idx}: {token!r}"
-        for idx, token in enumerate(model.to_str_tokens(prompt)[1:], start=1)
+        f"{idx}: {token!r}" for idx, token in enumerate(model.to_str_tokens(prompt)[1:], start=1)
     ]
 
     link_colors = []
@@ -288,8 +205,7 @@ def sankey_diagram_of_connectome(
     values = []
     link_labels = []
 
-    max_connection_strength = max(
-        abs(connexion.strength) for connexion in connectome)
+    max_connection_strength = max(abs(connexion.strength) for connexion in connectome)
 
     for connexion in connectome:
         if abs(connexion.strength) < threshold:
