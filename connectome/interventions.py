@@ -140,7 +140,6 @@ class BaseCorruptIntervention(Intervention):
             activation: Float[Tensor, "batch seq head d_head"],
             hook: HookPoint,
             source: int,
-            target: int,
     ):
         raise NotImplementedError
 
@@ -162,14 +161,11 @@ class BaseCorruptIntervention(Intervention):
             hook.ctx["score"] = activation[:, :, target, source]
             raise StopComputation()
 
+        clean_resid_pre = self.clean_cache[get_act_name("resid_pre", layer)]
         with self.model.hooks(fwd_hooks=[
-            (
-                    get_act_name("k", layer),
-                    partial(self.corrupt_source, source=source, target=target),
-            ),
+            (get_act_name("k", layer), partial(self.corrupt_source, source=source)),
             (get_act_name("attn_scores", layer), store_score),
         ]):
-            clean_resid_pre = self.clean_cache[get_act_name("resid_pre", layer)]
             try:
                 self.model.blocks[layer](clean_resid_pre)
             except StopComputation:
@@ -186,10 +182,7 @@ class BaseCorruptIntervention(Intervention):
             raise StopComputation()
 
         with self.model.hooks(fwd_hooks=[
-            (
-                    get_act_name("v", layer),
-                    partial(self.corrupt_source, source=source, target=target),
-            ),
+            (get_act_name("v", layer), partial(self.corrupt_source, source=source)),
             (get_act_name("attn_scores", layer), corrupt_score),
             (get_act_name("z", layer), hook_z),
         ]):
@@ -212,14 +205,13 @@ class CorruptIntervention(BaseCorruptIntervention):
         )[1]  # Ignore the logits
 
     def __repr__(self):
-        return (f"<{self.__class__.__name__}({self.clean_input} -> {self.corrupt_input})>")
+        return f"<{self.__class__.__name__}({self.clean_input} -> {self.corrupt_input})>"
 
     def corrupt_source(
             self,
             activation: Float[Tensor, "batch seq head d_head"],
             hook: HookPoint,
             source: int,
-            target: int,
     ):
         activation[:, source] = self.corrupt_cache[hook.name][source]
 
@@ -231,7 +223,6 @@ class CropIntervention(BaseCorruptIntervention):
             activation: Float[Tensor, "batch seq head d_head"],
             hook: HookPoint,
             source: int,
-            target: int,
     ):
         assert isinstance(source, int), "source must be int for crop intervention"
         activation[:, source] = self.corrupt_caches[source][hook.name][min(source, 1)]
