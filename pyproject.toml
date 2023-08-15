@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "connectome"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+tqdm = "^4.65.0"
+jaxtyping = "^0.2.20"
+plotly = "^5.14.1"
+torch = "<2.0.0"
+transformer-lens = "^1.2.2"
+einops = "^0.6.1"
+graphviz = "^0.20.1"
+circuitsvis = "^1.40.0"
+jupyter = "^1.0.0"
+streamlit = "^1.23.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.yapf]
+column_limit = 100
+continuation_align_style = "space"
+coalesce_brackets = true
+indent_dictionary_value = true
