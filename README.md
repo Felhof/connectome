@@ -1,5 +1,5 @@
 # LLM Connectome Explorer
-This repository provides tools for exploring the information flow inside large language models. It contains functions for various interventions and strategies for creating information-flow diagrams. See the LW companion post [INSERT LINK HERE] for an in-depth explanation of the tool's purpose.
+This repository provides tools for exploring the information flow inside large language models. It contains functions for various interventions and strategies for creating information-flow diagrams. See the LW [companion post](https://www.lesswrong.com/posts/xNgdJEep9DQQWhSbv/understanding-the-information-flow-inside-large-language) for an in-depth explanation of the tool's purpose.
 
 ![alt text](img/ioi_mary_zero_basic.png)
 
